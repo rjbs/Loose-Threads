@@ -198,14 +198,35 @@ enough for the agent, the MCP server may not be needed.
 Hooks, all of which call `lt`:
 
 * **SessionStart**: `lt hook session-start` reads the hook JSON from
-  stdin (session id, transcript path, cwd), derives the project id, and
-  emits `additionalContext` telling the agent its session id, project
-  id, and the list of open threads for the project.  This is how the
-  agent learns its identity.  It also serves as a reminder that the
-  backlog exists.
+  stdin (session id, transcript path, cwd, source), derives the project
+  id, and emits `additionalContext` telling the agent its session id,
+  project id, and the list of open threads for the project.  This is how
+  the agent learns its identity.  It also serves as a reminder that the
+  backlog exists.  SessionStart fires again after compaction with
+  `source: compact`, so the same hook re-injects identity and the open
+  list after context is summarized; in that case it opens by asking the
+  agent to record anything discussed before compaction that is missing
+  from the list.  Register it without a matcher so it runs on every
+  source.
 * **PreCompact**: `lt hook pre-compact` emits a nudge: "before context
-  is summarized, record any deferred items with Loose Threads."
-  Compaction is when these items are most often lost.
+  is summarized, record any deferred items with Loose Threads."  The
+  docs describe `additionalContext` for PreCompact, but the model has no
+  turn between the hook and the compaction in which to act, so this is
+  belt-and-braces.  The post-compaction SessionStart is the reliable
+  path.
+
+Registration, in `~/.claude/settings.json`:
+
+    {
+      "hooks": {
+        "SessionStart": [
+          { "hooks": [ { "type": "command", "command": "lt hook session-start" } ] }
+        ],
+        "PreCompact": [
+          { "hooks": [ { "type": "command", "command": "lt hook pre-compact" } ] }
+        ]
+      }
+    }
 
 Plus a paragraph in `~/.claude/CLAUDE.md`: when we defer something,
 record it as a thread; when asked what was deferred, list threads

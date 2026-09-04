@@ -34,6 +34,7 @@ func TestHookSessionStart(t *testing.T) {
 	input := func(session string) string {
 		return `{"session_id":"` + session + `","transcript_path":"/t.jsonl","cwd":"` + w.cwd + `","hook_event_name":"SessionStart","source":"startup"}`
 	}
+	compact := `{"session_id":"s1","cwd":"` + w.cwd + `","hook_event_name":"SessionStart","source":"compact"}`
 
 	w.checkHook("no store yet", "session-start", input("s1"), "SessionStart",
 		`(?s)Session id: s1\nProject id: github\.com/rjbs/testrepo\n.*No threads have been recorded`)
@@ -46,6 +47,11 @@ func TestHookSessionStart(t *testing.T) {
 	w.checkHook("lists open threads with marks", "session-start", input("s1"), "SessionStart",
 		`(?s)Open threads for this project \(2\):\n\n\* `+regexp.QuoteMeta(mine)+`  Mine\n  `+regexp.QuoteMeta(other)+`  Theirs\n\n\(\* marks`)
 
+	w.checkHook("after compaction", "session-start", compact, "SessionStart",
+		`(?s)^# Loose Threads\n\nContext was just compacted\..*Open threads for this project \(2\)`)
+	w.checkHook("startup does not mention compaction", "session-start", input("s1"), "SessionStart",
+		`^# Loose Threads\n\nLoose Threads is`)
+	w.checkHook("pre-compact", "pre-compact", input("s1"), "PreCompact", `about to be compacted`)
 	w.checkHook("empty stdin", "session-start", "", "SessionStart", `Loose Threads`)
 	w.checkHook("no session id", "session-start", `{"cwd":"`+w.cwd+`"}`, "SessionStart",
 		`(?s)^[^*]*Open threads for this project \(2\):\n\n  `+idPat+`  (Mine|Theirs)\n  `+idPat+`  (Mine|Theirs)\n$`)

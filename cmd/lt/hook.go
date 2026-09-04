@@ -83,6 +83,10 @@ func hookSessionStart(in hookInput) error {
 
 	var b strings.Builder
 	b.WriteString("# Loose Threads\n\n")
+	if in.Source == "compact" {
+		b.WriteString("Context was just compacted.  If deferred work was discussed before the\n")
+		b.WriteString("compaction and does not appear in the list below, record it now.\n\n")
+	}
 	b.WriteString("Loose Threads is a per-project backlog of small deferred items, shared between\n")
 	b.WriteString("you and the human across sessions.  When work is deferred (\"we should also\n")
 	b.WriteString("fix X, but not now\"), record it immediately:\n\n")
