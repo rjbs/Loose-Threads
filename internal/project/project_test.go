@@ -14,6 +14,19 @@ func checkNormalize(t *testing.T, raw, want string) {
 	}
 }
 
+func TestIsPath(t *testing.T) {
+	for id, want := range map[string]bool{
+		"github.com/rjbs/foo":       false,
+		"/Users/rjbs/code/foo":      true,
+		"/srv/git/foo":              true, // a local-path remote is a path too
+		"gitbox.example.com/g/repo": false,
+	} {
+		if got := IsPath(id); got != want {
+			t.Errorf("IsPath(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
 func TestNormalizeRemote(t *testing.T) {
 	checkNormalize(t, "git@github.com:rjbs/foo.git", "github.com/rjbs/foo")
 	checkNormalize(t, "https://github.com/rjbs/foo.git", "github.com/rjbs/foo")

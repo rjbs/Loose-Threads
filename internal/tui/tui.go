@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rjbs/loosethreads/internal/editor"
+	"github.com/rjbs/loosethreads/internal/project"
 	"github.com/rjbs/loosethreads/internal/store"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
@@ -549,20 +550,27 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 const minDetailWidth = 100
 
-// warning returns a callout for the current project, or "".
-func (m *Model) warning() string {
+// warnings returns callouts for the current project, one line each.
+func (m *Model) warnings() []string {
 	p := m.project()
-	if p == nil || !p.Mismatched() {
-		return ""
+	if p == nil {
+		return nil
 	}
-	return fmt.Sprintf("warning: this directory is named for another project, but its project.yaml says %q; fix the id in %s",
-		p.ID, filepath.Join(p.Dir, "project.yaml"))
+	var ws []string
+	if p.Mismatched() {
+		ws = append(ws, fmt.Sprintf("warning: this directory is named for another project, but its project.yaml says %q; fix the id in %s",
+			p.ID, filepath.Join(p.Dir, "project.yaml")))
+	}
+	if project.IsPath(p.ID) {
+		ws = append(ws, "warning: "+project.PathWarning)
+	}
+	return ws
 }
 
 func (m *Model) bodyHeight() int {
 	h := m.height - 2
-	if m.warning() != "" && m.mode != modeProjects {
-		h--
+	if m.mode != modeProjects {
+		h -= len(m.warnings())
 	}
 	return max(h, 1)
 }
@@ -572,11 +580,7 @@ func (m *Model) layout() {
 	if m.width >= minDetailWidth {
 		listW = m.width / 2
 	}
-	listH := m.height - 2
-	if m.warning() != "" {
-		listH--
-	}
-	m.list.SetSize(listW, max(listH, 1))
+	m.list.SetSize(listW, max(m.height-2-len(m.warnings()), 1))
 	m.plist.SetSize(m.width, max(m.height-2, 1))
 	m.input.Width = max(m.width-len(m.input.Prompt)-2, 10)
 }
@@ -641,8 +645,10 @@ func (m *Model) frame(header, body, footer string) string {
 	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)
 	top := styleHeader.Render(truncate(header, m.width))
-	if w := m.warning(); w != "" && m.mode != modeProjects {
-		top += "\n" + styleWarning.Render(truncate(w, m.width))
+	if m.mode != modeProjects {
+		for _, w := range m.warnings() {
+			top += "\n" + styleWarning.Render(truncate(w, m.width))
+		}
 	}
 	return top + "\n" + body + "\n" + truncate(footer, m.width)
 }

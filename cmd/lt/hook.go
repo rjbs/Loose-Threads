@@ -106,7 +106,11 @@ func hookSessionStart(in hookInput) error {
 		fmt.Fprintf(&b, "Project: could not be identified (%v)\n", err)
 		return emitContext("SessionStart", b.String())
 	}
-	fmt.Fprintf(&b, "Project id: %s\n\n", id.ID)
+	fmt.Fprintf(&b, "Project id: %s\n", id.ID)
+	if project.IsPath(id.ID) {
+		fmt.Fprintf(&b, "Warning: %s.  Mention this to the user.\n", project.PathWarning)
+	}
+	b.WriteString("\n")
 
 	s, err := store.Open("")
 	if err != nil {

@@ -17,6 +17,16 @@ type Identity struct {
 	Source string // "remote:github", "remote:origin", "gitroot", or "path"
 }
 
+// IsPath reports whether id is a filesystem path rather than a normalized
+// remote, meaning it was derived from the git root or working directory
+// because no recognized remote existed.  Such an identity changes as soon
+// as a remote is added, orphaning threads recorded under it.
+func IsPath(id string) bool { return strings.HasPrefix(id, "/") }
+
+// PathWarning is the text shown when a project is identified by path.
+const PathWarning = "this project is identified by its checkout path because the repository has no github, gitbox, or origin remote; " +
+	"add a remote before recording many threads, or they will be orphaned when the identity changes"
+
 // RemotePrecedence lists remote names in the order they are consulted.
 var RemotePrecedence = []string{"github", "gitbox", "origin"}
 

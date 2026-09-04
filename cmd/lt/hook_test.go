@@ -62,6 +62,12 @@ func TestHookSessionStart(t *testing.T) {
 	w.checkHook("no session id", "session-start", `{"cwd":"`+w.cwd+`"}`, "SessionStart",
 		`(?s)^[^*]*Open threads for this project \(2\):\n\n  `+idPat+`  (Mine|Theirs)\n  `+idPat+`  (Mine|Theirs)\n$`)
 
+	plain := t.TempDir()
+	w.checkHook("path identity warns", "session-start", `{"cwd":"`+plain+`"}`, "SessionStart",
+		`(?s)Project id: /.*\nWarning: this project is identified by its checkout path`)
+	w.checkHook("remote identity does not warn", "session-start", input("s1"), "SessionStart",
+		`Project id: github\.com/rjbs/testrepo\n\n`)
+
 	_, errOut, code := w.run("not json", nil, "hook", "session-start")
 	if code != 1 || !strings.Contains(errOut, "decoding hook input") {
 		t.Errorf("bad json: exit %d, stderr %q", code, errOut)

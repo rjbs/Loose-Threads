@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/rjbs/loosethreads/internal/editor"
+	"github.com/rjbs/loosethreads/internal/project"
 	"github.com/rjbs/loosethreads/internal/store"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
@@ -62,6 +63,9 @@ func runAdd(args []string) error {
 	c, err := openWorkspace(*projectID, true)
 	if err != nil {
 		return err
+	}
+	if project.IsPath(c.project.ID) {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", project.PathWarning)
 	}
 
 	full := title + "\n"

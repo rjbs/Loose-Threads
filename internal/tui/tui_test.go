@@ -268,6 +268,17 @@ func TestMismatchedProjectWarning(t *testing.T) {
 	checkView(t, "picker has one entry, no warning", m2, []string{"1    /old/path"}, []string{"warning:", "1    " + projA})
 }
 
+func TestPathIdentityWarning(t *testing.T) {
+	m, _ := newModel(t, "/Users/someone/code/thing", fixture{"/Users/someone/code/thing", "One", thread.Open})
+	checkView(t, "path warning", m, []string{"identified by its checkout path", "One"}, nil)
+	press(m, "p")
+	checkView(t, "not in picker", m, nil, []string{"checkout path"})
+	press(m, "esc")
+
+	m2, _ := newModel(t, projA, fixture{projA, "One", thread.Open})
+	checkView(t, "remote identity has no warning", m2, nil, []string{"checkout path"})
+}
+
 func TestHelpAndQuit(t *testing.T) {
 	m, _ := newModel(t, projA, fixture{projA, "One", thread.Open})
 	press(m, "?")

@@ -118,7 +118,11 @@ and trailing `.git` removed, so that `git@github.com:rjbs/foo.git` and
 same repository therefore share one project, which is what we want.
 
 The path fallbacks are ugly but never merge unrelated projects, unlike
-a basename fallback would.
+a basename fallback would.  They are also unstable: the moment a remote
+is added the identity changes and threads recorded under the path are
+orphaned.  So a path identity is flagged wherever it is seen: a callout
+in the browser, a warning in the SessionStart context (with an
+instruction to tell the user), and a line on stderr from `lt add`.
 
 ### Project directories
 
