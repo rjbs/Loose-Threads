@@ -757,7 +757,7 @@ func (m *Model) viewPicker() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(listW).Render(left), " ", right)
 	}
 
-	header := th.Header.Render(headerGlyph+"projects") + th.HeaderMeta.Render(fmt.Sprintf("  %d", len(m.projects)))
+	header := th.Header.Render(headerGlyph+"Loose Threads") + th.HeaderMeta.Render(fmt.Sprintf("  %d projects", len(m.projects)))
 	footer := m.footerKeys("enter: select", "/: filter", "esc: back", "q: quit")
 	return m.frame(header, body, footer)
 }
