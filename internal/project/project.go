@@ -25,7 +25,7 @@ func IsPath(id string) bool { return strings.HasPrefix(id, "/") }
 
 // PathWarning is the text shown when a project is identified by path.
 const PathWarning = "this project is identified by its checkout path because the repository has no github, gitbox, or origin remote; " +
-	"add a remote before recording many threads, or they will be orphaned when the identity changes"
+	"after adding a remote, run \"lt rehome\" to move its threads under the new identity"
 
 // RemotePrecedence lists remote names in the order they are consulted.
 var RemotePrecedence = []string{"github", "gitbox", "origin"}
@@ -88,6 +88,27 @@ func remoteURL(root, name string) (string, error) {
 		return "", fmt.Errorf("project: remote %q has no url", name)
 	}
 	return u, nil
+}
+
+// PathIdentities returns the identities dir would have had with no
+// recognized remote: its git root, if any, and the directory itself.
+// These are the projects "lt rehome" looks for.
+func PathIdentities(dir string) ([]string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if abs, err = filepath.EvalSymlinks(abs); err != nil {
+		return nil, err
+	}
+	ids := []string{}
+	if root, err := gitRoot(abs); err == nil {
+		ids = append(ids, root)
+	}
+	if len(ids) == 0 || ids[0] != abs {
+		ids = append(ids, abs)
+	}
+	return ids, nil
 }
 
 // NormalizeRemote reduces a git remote URL to "host/path", dropping the

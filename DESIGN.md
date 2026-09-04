@@ -124,6 +124,16 @@ orphaned.  So a path identity is flagged wherever it is seen: a callout
 in the browser, a warning in the SessionStart context (with an
 instruction to tell the user), and a line on stderr from `lt add`.
 
+The common sequence is: threads recorded before the repository had a
+remote, then a remote added, then a wish to fix the storage.  `lt
+rehome` handles it: it computes the current (remote-based) identity,
+looks for projects under the identities the checkout would have had
+without a remote (its git root, and the directory itself), moves their
+thread files into the remote-based project, and removes the emptied
+directories.  It refuses to move anything if an id would collide, says
+so and exits 0 if there is nothing to move, and errors if the checkout
+still has no remote.
+
 ### Project directories
 
 Every project is one directory directly under the store root, so all
@@ -189,6 +199,7 @@ agent if no MCP server is running.  Rough shape:
     lt reopen THREAD... [-note WHY]
     lt edit THREAD              # opens $EDITOR
     lt project-id [DIR] [-v]    # print the derived identity
+    lt rehome                   # move path-identified threads under the remote identity
     lt browse                   # the TUI; bare "lt" at a terminal does the same
     lt mcp                      # the MCP server, on stdio
     lt hook session-start       # see Claude Code integration

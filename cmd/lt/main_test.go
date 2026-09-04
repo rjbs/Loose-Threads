@@ -178,3 +178,29 @@ func TestEditPositionsCursor(t *testing.T) {
 		t.Errorf("cursor on line %s, want 6", got)
 	}
 }
+
+func TestRehome(t *testing.T) {
+	w := newWorld(t)
+	// newWorld gives the repo an origin remote; take it away to start out
+	// path-identified.
+	if out, err := exec.Command("git", "-C", w.cwd, "remote", "remove", "origin").CombinedOutput(); err != nil {
+		t.Fatalf("git remote remove: %v\n%s", err, out)
+	}
+	w.check("rehome without remote", 1, `no remote-based identity`, "rehome")
+
+	_, errOut, _ := w.run("", nil, "add", "Early one")
+	if !strings.Contains(errOut, "lt rehome") {
+		t.Errorf("add under a path identity should mention lt rehome: %q", errOut)
+	}
+	w.check("add another", 0, idPat, "add", "Early two")
+	w.check("path identity", 0, `^/`, "project-id")
+
+	if out, err := exec.Command("git", "-C", w.cwd, "remote", "add", "origin", "git@github.com:rjbs/testrepo.git").CombinedOutput(); err != nil {
+		t.Fatalf("git remote add: %v\n%s", err, out)
+	}
+	w.check("threads now invisible", 0, `^$`, "list")
+	w.check("rehome", 0, `(?s)`+idPat+`: /.* -> github\.com/rjbs/testrepo\n`+idPat+`: /.* -> github\.com/rjbs/testrepo\n$`, "rehome")
+	w.check("threads visible again", 0, `(?s)Early one.*Early two|Early two.*Early one`, "list")
+	w.check("rehome again", 0, `nothing to do`, "rehome")
+	w.check("only one project remains", 0, `(?s)^github\.com/rjbs/testrepo\n.*Early`, "list", "-scope", "all")
+}

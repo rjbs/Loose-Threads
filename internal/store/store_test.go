@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,6 +227,54 @@ func TestMismatched(t *testing.T) {
 	ps, _ := s.Projects()
 	if len(ps) != 1 || !ps[0].Mismatched() {
 		t.Errorf("Projects should report the mismatched project: %+v", ps)
+	}
+}
+
+func TestRehome(t *testing.T) {
+	s := newStore(t)
+	a := addThread(t, s, "/old/path", "one")
+	b := addThread(t, s, "/old/path", "two")
+	old, _ := s.LookupProject("/old/path")
+
+	moved, err := s.Rehome("/old/path", "github.com/rjbs/new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(moved) != 2 {
+		t.Errorf("moved %v", moved)
+	}
+	checkTitles(t, s, "github.com/rjbs/new", 0, "one", "two")
+	if _, err := os.Stat(old.Dir); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("old directory still present: %v", err)
+	}
+	checkProjects(t, s, "github.com/rjbs/new")
+
+	if _, err := s.Rehome("/old/path", "github.com/rjbs/new"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("rehoming a gone project: %v, want ErrNotFound", err)
+	}
+
+	// A collision refuses to move anything.
+	c := addThread(t, s, "/other/path", "three")
+	newP, _ := s.LookupProject("github.com/rjbs/new")
+	dup := &thread.Thread{ID: c.ID, State: thread.Open, Body: "dup\n", Created: now}
+	if err := s.Save(newP, dup); err != nil {
+		t.Fatal(err)
+	}
+	addThread(t, s, "/other/path", "four")
+	if _, err := s.Rehome("/other/path", "github.com/rjbs/new"); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("collision: %v", err)
+	}
+	checkTitles(t, s, "/other/path", 0, "three", "four")
+	_ = a
+	_ = b
+
+	// An empty source project moves nothing and is left alone.
+	if _, err := s.Project("/empty/path"); err != nil {
+		t.Fatal(err)
+	}
+	moved, err = s.Rehome("/empty/path", "github.com/rjbs/new")
+	if err != nil || moved != nil {
+		t.Errorf("empty source: moved %v, err %v", moved, err)
 	}
 }
 

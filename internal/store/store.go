@@ -343,6 +343,58 @@ func (s *Store) Save(p *Project, t *thread.Thread) error {
 	return writeAtomic(s.ThreadPath(p, t.ID), data)
 }
 
+// Rehome moves every thread file from the project fromID into the project
+// toID, creating the destination if needed, and removes the source
+// directory once it is empty.  It refuses to move anything if any thread
+// id already exists in the destination.  It returns the ids moved.
+func (s *Store) Rehome(fromID, toID string) ([]string, error) {
+	if fromID == toID {
+		return nil, fmt.Errorf("store: source and destination are the same project")
+	}
+	from, err := s.LookupProject(fromID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(from.Dir)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), threadExt) {
+			ids = append(ids, strings.TrimSuffix(e.Name(), threadExt))
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	to, err := s.Project(toID)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		if _, err := os.Lstat(s.ThreadPath(to, id)); err == nil {
+			return nil, fmt.Errorf("store: thread %s already exists in %s; nothing moved", id, toID)
+		}
+	}
+	for _, id := range ids {
+		if err := os.Rename(s.ThreadPath(from, id), s.ThreadPath(to, id)); err != nil {
+			return nil, err
+		}
+	}
+
+	// Leave the source directory alone if it holds anything we do not
+	// understand; otherwise clear it away.
+	if err := os.Remove(filepath.Join(from.Dir, projectFile)); err != nil {
+		return ids, err
+	}
+	if err := os.Remove(from.Dir); err != nil {
+		return ids, fmt.Errorf("moved %d threads, but could not remove %s: %w", len(ids), from.Dir, err)
+	}
+	return ids, nil
+}
+
 // writeAtomic writes data to a temporary file beside path and renames it
 // into place, so readers never see a partial file.
 func writeAtomic(path string, data []byte) error {
