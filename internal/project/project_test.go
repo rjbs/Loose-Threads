@@ -99,6 +99,18 @@ func TestIdentify(t *testing.T) {
 	origin := makeRepo(t, map[string]string{"origin": "https://example.com/o/repo"})
 	checkIdentify(t, "origin", origin, Identity{"example.com/o/repo", "remote:origin"})
 
+	rjbs := makeRepo(t, map[string]string{
+		"upstream": "https://example.com/u/repo",
+		"rjbs":     "git@github.com:rjbs/mine.git",
+	})
+	checkIdentify(t, "rjbs is the last resort", rjbs, Identity{"github.com/rjbs/mine", "remote:rjbs"})
+
+	originOverRjbs := makeRepo(t, map[string]string{
+		"origin": "https://example.com/o/repo",
+		"rjbs":   "git@github.com:rjbs/mine.git",
+	})
+	checkIdentify(t, "origin beats rjbs", originOverRjbs, Identity{"example.com/o/repo", "remote:origin"})
+
 	other := makeRepo(t, map[string]string{"upstream": "https://example.com/u/repo"})
 	checkIdentify(t, "unlisted remote falls back to root", other, Identity{realpath(t, other), "gitroot"})
 

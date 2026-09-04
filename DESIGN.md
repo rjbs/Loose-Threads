@@ -109,8 +109,9 @@ first of these that exists wins:
 1. the URL of the remote named `github`
 2. the URL of the remote named `gitbox`
 3. the URL of the remote named `origin`
-4. the absolute path of the git root
-5. the absolute path of the working directory (not in a checkout)
+4. the URL of the remote named `rjbs`
+5. the absolute path of the git root
+6. the absolute path of the working directory (not in a checkout)
 
 Remote URLs are normalized to `host/path` with the scheme, user, port,
 and trailing `.git` removed, so that `git@github.com:rjbs/foo.git` and

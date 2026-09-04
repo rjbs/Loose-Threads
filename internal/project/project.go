@@ -24,11 +24,11 @@ type Identity struct {
 func IsPath(id string) bool { return strings.HasPrefix(id, "/") }
 
 // PathWarning is the text shown when a project is identified by path.
-const PathWarning = "this project is identified by its checkout path because the repository has no github, gitbox, or origin remote; " +
+const PathWarning = "this project is identified by its checkout path because the repository has no github, gitbox, origin, or rjbs remote; " +
 	"after adding a remote, run \"lt rehome\" to move its threads under the new identity"
 
 // RemotePrecedence lists remote names in the order they are consulted.
-var RemotePrecedence = []string{"github", "gitbox", "origin"}
+var RemotePrecedence = []string{"github", "gitbox", "origin", "rjbs"}
 
 // Identify derives the project identity for dir.  The first of these that
 // exists wins: a remote from RemotePrecedence, the git root, or the

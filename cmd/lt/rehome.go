@@ -30,7 +30,7 @@ func runRehome(args []string) error {
 		return err
 	}
 	if project.IsPath(id.ID) {
-		return fmt.Errorf("this checkout has no github, gitbox, or origin remote, so there is no remote-based identity to move threads to")
+		return fmt.Errorf("this checkout has no github, gitbox, origin, or rjbs remote, so there is no remote-based identity to move threads to")
 	}
 
 	paths, err := project.PathIdentities(".")
