@@ -159,6 +159,37 @@ func TestStateToggles(t *testing.T) {
 	checkState(t, "unabandoned", s, projA, "One", thread.Open)
 }
 
+func TestCloseWithNote(t *testing.T) {
+	m, s := newModel(t, projA,
+		fixture{projA, "Decide thing", thread.Open},
+		fixture{projA, "Other", thread.Open},
+	)
+	press(m, "D")
+	checkView(t, "prompt", m, []string{"done, because:"}, nil)
+	typeText(m, "chose option B")
+	press(m, "enter")
+	checkState(t, "done", s, projA, "Decide thing", thread.Done)
+	checkView(t, "hidden after own close", m, []string{"Other"}, []string{"Decide thing"})
+
+	p, _ := s.LookupProject(projA)
+	ths, _, _ := s.Threads(p)
+	if !strings.HasSuffix(ths[0].Body, "Done 2026-09-04: chose option B\n") {
+		t.Errorf("note not appended: %q", ths[0].Body)
+	}
+
+	press(m, "X")
+	checkView(t, "abandon prompt", m, []string{"abandon, because:"}, nil)
+	press(m, "esc")
+	checkState(t, "esc cancels", s, projA, "Other", thread.Open)
+
+	press(m, "c", "k") // show closed, move up to the done one
+	press(m, "D")
+	checkView(t, "reopen prompt on a done thread", m, []string{"reopen, because:"}, nil)
+	typeText(m, "came back")
+	press(m, "enter")
+	checkState(t, "reopened", s, projA, "Decide thing", thread.Open)
+}
+
 func TestAdd(t *testing.T) {
 	m, s := newModel(t, projA, fixture{projA, "Existing", thread.Open})
 

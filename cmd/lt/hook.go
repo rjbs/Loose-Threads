@@ -93,7 +93,9 @@ func hookSessionStart(in hookInput) error {
 	b.WriteString("    lt add \"short title\" -body \"why it came up and what to do\"\n\n")
 	b.WriteString("Session id and origin are picked up from the environment.  When asked what\n")
 	b.WriteString("was deferred, run `lt list` (this project) or `lt list -scope session` (this\n")
-	b.WriteString("session) rather than recalling from memory.  Close items with `lt done ID`.\n\n")
+	b.WriteString("session) rather than recalling from memory.  Close items with `lt done ID` or\n")
+	b.WriteString("`lt abandon ID`, adding `-note \"why\"` when the reason is not obvious from a\n")
+	b.WriteString("commit, especially for threads that were questions to decide.\n\n")
 
 	if in.SessionID != "" {
 		fmt.Fprintf(&b, "Session id: %s\n", in.SessionID)

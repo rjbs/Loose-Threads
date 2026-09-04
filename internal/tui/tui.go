@@ -28,6 +28,7 @@ const (
 	modeThreads mode = iota
 	modeProjects
 	modeAdd
+	modeNote // closing with a note
 	modeHelp
 )
 
@@ -41,6 +42,7 @@ type Model struct {
 	showClosed bool
 	mode       mode
 	addAndEdit bool
+	noteTarget thread.State // the state a modeNote prompt will apply
 
 	// sticky holds ids of threads shown as open since the last hard
 	// refresh.  When one of them is closed by someone else it stays on
@@ -295,6 +297,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateProjects(msg)
 		case modeAdd:
 			return m.updateAdd(msg)
+		case modeNote:
+			return m.updateNote(msg)
 		case modeHelp:
 			m.mode = modeThreads
 			return m, nil
@@ -342,12 +346,25 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.mode = modeAdd
 		m.addAndEdit = msg.String() == "A"
+		m.input.Prompt = "title: "
 		m.input.Reset()
 		return m, m.input.Focus()
 	case "d":
-		return m, m.toggleState(thread.Done)
+		return m, m.toggleState(thread.Done, "")
 	case "x":
-		return m, m.toggleState(thread.Abandoned)
+		return m, m.toggleState(thread.Abandoned, "")
+	case "D", "X":
+		if m.selected() == nil {
+			return m, nil
+		}
+		m.noteTarget = thread.Done
+		if msg.String() == "X" {
+			m.noteTarget = thread.Abandoned
+		}
+		m.mode = modeNote
+		m.input.Prompt = fmt.Sprintf("%s, because: ", noteVerb(m.selected(), m.noteTarget))
+		m.input.Reset()
+		return m, m.input.Focus()
 	case "e", "enter":
 		if t := m.selected(); t != nil {
 			return m, m.edit(t)
@@ -360,9 +377,20 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// noteVerb describes what pressing D or X on t will do, for the prompt.
+func noteVerb(t *thread.Thread, target thread.State) string {
+	if t.State == target {
+		return "reopen"
+	}
+	if target == thread.Abandoned {
+		return "abandon"
+	}
+	return "done"
+}
+
 // toggleState moves the selected thread to target, or back to open if it
-// is already in target, and saves it.
-func (m *Model) toggleState(target thread.State) tea.Cmd {
+// is already in target, appends note if any, and saves it.
+func (m *Model) toggleState(target thread.State, note string) tea.Cmd {
 	t := m.selected()
 	if t == nil {
 		return nil
@@ -371,7 +399,7 @@ func (m *Model) toggleState(target thread.State) tea.Cmd {
 	if t.State == target {
 		next = thread.Open
 	}
-	if err := t.SetState(next, m.now()); err != nil {
+	if err := t.Resolve(next, note, m.now()); err != nil {
 		m.err = err
 		return nil
 	}
@@ -446,6 +474,24 @@ func (m *Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.plist, cmd = m.plist.Update(msg)
+	return m, cmd
+}
+
+func (m *Model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeThreads
+		m.input.Blur()
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	case "enter":
+		m.mode = modeThreads
+		m.input.Blur()
+		return m, m.toggleState(m.noteTarget, m.input.Value())
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
 	return m, cmd
 }
 
@@ -552,9 +598,12 @@ func (m *Model) View() string {
 			m.viewDetail(m.width-m.width/2-1))
 	}
 
-	footer := "a: add  A: add+edit  e: edit  d: done  x: abandon  c: closed  p/[/]: project  /: filter  ?: help  q: quit"
-	if m.mode == modeAdd {
+	footer := "a: add  A: add+edit  e: edit  d/D: done  x/X: abandon  c: closed  p/[/]: project  /: filter  ?: help  q: quit"
+	switch m.mode {
+	case modeAdd:
 		footer = m.input.View() + styleDim.Render("   (enter: save, esc: cancel)")
+	case modeNote:
+		footer = m.input.View() + styleDim.Render("   (enter: apply, esc: cancel)")
 	}
 	return m.frame(header, body, footer)
 }
@@ -562,7 +611,7 @@ func (m *Model) View() string {
 func (m *Model) frame(header, body, footer string) string {
 	if m.err != nil {
 		footer = styleError.Render(m.err.Error())
-	} else if m.status != "" && m.mode != modeAdd {
+	} else if m.status != "" && m.mode != modeAdd && m.mode != modeNote {
 		footer = m.status + styleDim.Render("   "+footer)
 	}
 	bodyH := max(m.height-2, 1)
@@ -604,6 +653,7 @@ func (m *Model) viewHelp() string {
   A              add a thread and open it in $EDITOR
   d              mark done (again: reopen)
   x              mark abandoned (again: reopen)
+  D, X           the same, with a one-line note appended saying why
   c              show/hide done and abandoned threads
   p              pick a project
   [ / ]          previous / next project

@@ -151,6 +151,10 @@ func TestTools(t *testing.T) {
 		t.Errorf("include_closed: %q", got)
 	}
 	h.call("set_thread_state", map[string]any{"id": b.ID, "state": "pending"}, "state must be", nil)
+	h.call("set_thread_state", map[string]any{"id": b.ID, "state": "abandoned", "note": "superseded"}, "", &v)
+	if !strings.HasSuffix(v.Body, "Abandoned "+time.Now().Format("2006-01-02")+": superseded\n") {
+		t.Errorf("note not appended: %q", v.Body)
+	}
 
 	h.call("add_thread", map[string]any{"title": "   "}, "blank", nil)
 	h.call("add_thread", map[string]any{}, "missing properties", nil) // schema validation, before the handler

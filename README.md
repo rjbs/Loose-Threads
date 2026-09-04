@@ -49,7 +49,8 @@ Either way, a line in `~/.claude/CLAUDE.md` helps:
     lt list -all-states         # include done and abandoned
     lt show 7k2m                # by id or unique suffix
     lt done 7k2m
-    lt abandon 7k2m
+    lt done 7k2m -note "fixed in abc123"      # note is appended to the thread
+    lt abandon 7k2m -note "superseded by the rewrite"
     lt reopen 7k2m
     lt edit 7k2m                # in $EDITOR, cursor on the title line
     lt project-id -v            # what project is this directory?
@@ -61,7 +62,8 @@ without being told.
 
 In `lt browse`: `a` adds a thread, `A` adds and opens it in your editor,
 `e` or enter edits, `d` marks done, `x` marks abandoned (either again
-reopens), `c` shows closed threads, `p` picks a project, `[` and `]`
+reopens), `D` and `X` do the same after asking for a one-line note
+saying why, `c` shows closed threads, `p` picks a project, `[` and `]`
 step between projects, `/` filters, `?` lists everything.
 
 The browser refreshes itself as the store changes, so it can sit in a

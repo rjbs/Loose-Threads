@@ -63,6 +63,25 @@ Threads are never deleted by the tools.  `done` and `abandoned` items
 stay on disk and are hidden by default in listings.  Purging is a later
 conversation.
 
+### Closing with a note
+
+A thread that was a question ("decide whether to register the MCP
+server") is the only record of its own answer, so closing it bare turns
+a record into a tombstone, and a later session that was tracking it
+learns nothing.  Every way of changing state therefore takes an optional
+one-line note, appended to the body as a final paragraph:
+
+    Done 2026-09-04: registered it after all; the CLI alone was not used.
+
+The label is `Done`, `Abandoned`, or `Reopened`.  The note lives in the
+body rather than a frontmatter field so it needs no YAML quoting, reads
+naturally in the editor, and accumulates as history if a thread is
+reopened and closed again.  Nothing is structured about it beyond the
+label; if resolutions ever need querying, the paragraphs are easy to
+migrate.  In the browser, `d` and `x` close instantly and `D` and `X`
+prompt for the note, so the quick case stays quick and the prompt is
+there for the case where forgetting is the failure mode.
+
 ### Thread ids
 
 The filename is the id: `YYYY-MM-DD-xxxx`, where `xxxx` is four random
@@ -157,9 +176,9 @@ agent if no MCP server is running.  Rough shape:
                                 [-transcript PATH] [-origin agent|human]
     lt list [-scope session|project|all] [-all-states] [-json]
     lt show THREAD [-json]
-    lt done THREAD...
-    lt abandon THREAD...
-    lt reopen THREAD...
+    lt done THREAD... [-note WHY]
+    lt abandon THREAD... [-note WHY]
+    lt reopen THREAD... [-note WHY]
     lt edit THREAD              # opens $EDITOR
     lt project-id [DIR] [-v]    # print the derived identity
     lt browse                   # the TUI
@@ -187,6 +206,7 @@ all projects, with hotkeys for the common edits:
 * show or hide closed threads
 * add a new thread (title prompt, then optionally the editor)
 * open the current thread in `$EDITOR`
+* close with a one-line note (`D`, `X`)
 
 When opening a thread in Vim the invocation can position the cursor on
 the title line, so the frontmatter-first layout costs nothing.
@@ -208,7 +228,7 @@ official Go MCP SDK.  Small surface:
 * `add_thread(title, body?, project?, session?, transcript?)`
 * `list_threads(scope?, project?, session?, include_closed?)`
 * `get_thread(id, project?)`
-* `set_thread_state(id, state, project?)`
+* `set_thread_state(id, state, note?, project?)`
 
 The server does not know which session it is serving.  The agent passes
 project and session ids explicitly, having learned them at session

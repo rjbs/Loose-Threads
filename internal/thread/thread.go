@@ -154,6 +154,33 @@ func (t *Thread) SetState(s State, now time.Time) error {
 	return nil
 }
 
+// noteWord is the label a note gets for each state it accompanies.
+var noteWord = map[State]string{Open: "Reopened", Done: "Done", Abandoned: "Abandoned"}
+
+// Resolve changes the state as SetState does and, if note is non-empty,
+// appends it to the body as a final paragraph labelled with the state and
+// date, e.g. "Done 2026-09-04: registered it after all."  The note lives
+// in the body rather than the frontmatter so it needs no YAML quoting
+// and reads naturally in the editor.
+func (t *Thread) Resolve(s State, note string, now time.Time) error {
+	if err := t.SetState(s, now); err != nil {
+		return err
+	}
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return nil
+	}
+	body := t.Body
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	if body != "" {
+		body += "\n"
+	}
+	t.Body = fmt.Sprintf("%s%s %s: %s\n", body, noteWord[s], now.Format("2006-01-02"), note)
+	return nil
+}
+
 // IsOpen reports whether the thread is still open.
 func (t *Thread) IsOpen() bool { return t.State == Open }
 

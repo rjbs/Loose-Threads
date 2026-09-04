@@ -67,7 +67,9 @@ func New(s *store.Store, defaultProject string) *mcp.Server {
 	mcp.AddTool(m, &mcp.Tool{
 		Name: "set_thread_state",
 		Description: "Change a thread's state to open, done, or abandoned.  Use done when " +
-			"the work was completed and abandoned when it will not be.",
+			"the work was completed and abandoned when it will not be.  Pass a note " +
+			"saying why, especially for threads that were questions to decide; it is " +
+			"appended to the thread so a later session can see the outcome.",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true},
 	}, srv.setThreadState)
 
@@ -203,6 +205,7 @@ func (s *server) getThread(ctx context.Context, req *mcp.CallToolRequest, in get
 type setStateInput struct {
 	ID      string `json:"id" jsonschema:"thread id, or a unique suffix of one"`
 	State   string `json:"state" jsonschema:"open, done, or abandoned"`
+	Note    string `json:"note,omitempty" jsonschema:"one line saying why: what was decided, where it was fixed, why it was dropped.  Appended to the thread"`
 	Project string `json:"project,omitempty" jsonschema:"project id; defaults to the project of the server's working directory"`
 }
 
@@ -218,7 +221,7 @@ func (s *server) setThreadState(ctx context.Context, req *mcp.CallToolRequest, i
 	if err != nil {
 		return nil, store.View{}, err
 	}
-	if err := t.SetState(thread.State(in.State), s.now().Truncate(time.Second)); err != nil {
+	if err := t.Resolve(thread.State(in.State), in.Note, s.now().Truncate(time.Second)); err != nil {
 		return nil, store.View{}, err
 	}
 	if err := s.store.Save(p, t); err != nil {
