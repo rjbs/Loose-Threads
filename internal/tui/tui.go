@@ -63,8 +63,12 @@ type Model struct {
 	status        string
 	err           error
 
-	now func() time.Time
+	theme Theme
+	now   func() time.Time
 }
+
+// SetTheme changes the theme.  Call before Run.
+func (m *Model) SetTheme(t Theme) { m.theme = t }
 
 // New builds a Model over s, starting on the project with id start.  If
 // that project has no directory in the store yet it is shown anyway, so
@@ -72,6 +76,7 @@ type Model struct {
 // the first add.  An empty start selects the first project.
 func New(s *store.Store, start string) (*Model, error) {
 	m := &Model{store: s, now: time.Now, sticky: map[string]bool{}}
+	m.theme, _ = LookupTheme(DefaultTheme)
 
 	m.list = list.New(nil, threadDelegate{m}, 0, 0)
 	m.list.SetShowTitle(false)
@@ -586,7 +591,7 @@ func (m *Model) warningBox(width int) string {
 	for i, w := range ws {
 		ws[i] = warningGlyph + " " + w
 	}
-	return styleWarningBox.Width(max(width-2, 1)).Render(strings.Join(ws, "\n"))
+	return m.theme.WarningBox.Width(max(width-2, 1)).Render(strings.Join(ws, "\n"))
 }
 
 // warningHeight is the number of rows the warning box takes.
@@ -607,80 +612,110 @@ func (m *Model) listWidth() int {
 }
 
 func (m *Model) layout() {
-	m.list.SetSize(m.listWidth(), max(m.bodyHeight()-m.warningHeight(), 1))
+	w, h := m.listWidth(), m.bodyHeight()-m.warningHeight()
+	if m.theme.Panes {
+		w, h = w-2-m.theme.PanePadding, h-2
+	}
+	m.list.SetSize(max(w, 1), max(h, 1))
 	m.plist.SetSize(m.width, m.bodyHeight())
 	m.input.Width = max(m.width-len(m.input.Prompt)-2, 10)
 }
-
-var (
-	styleHeader     = lipgloss.NewStyle().Bold(true)
-	styleDim        = lipgloss.NewStyle().Faint(true)
-	styleSelected   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styleClosed     = lipgloss.NewStyle().Faint(true).Strikethrough(true)
-	styleError      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	styleWarningBox = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("9")).
-			Foreground(lipgloss.Color("15")).
-			Bold(true).
-			PaddingLeft(1)
-	styleDetailHd = lipgloss.NewStyle().Faint(true)
-)
 
 // View implements tea.Model.
 func (m *Model) View() string {
 	if m.width == 0 {
 		return ""
 	}
+	th := m.theme
 	switch m.mode {
 	case modeHelp:
 		return m.viewHelp()
 	case modeProjects:
-		return m.frame("projects", m.plist.View(), "enter: select  /: filter  esc: back")
+		return m.frame("projects", listView(m.plist), m.footerKeys("enter: select", "/: filter", "esc: back"))
 	}
 
-	header := "no projects"
+	header := th.Header.Render("no projects")
 	if p := m.project(); p != nil {
-		header = p.DisplayName()
+		header = th.Header.Render(p.DisplayName())
 		if p.Name != "" {
-			header += styleDim.Render("  " + p.ID)
+			header += th.HeaderMeta.Render("  " + p.ID)
 		}
-		header += styleDim.Render(fmt.Sprintf("  %d open", m.openCurrent()))
+		header += th.HeaderMeta.Render(fmt.Sprintf("  %d open", m.openCurrent()))
 	}
 	if m.showClosed {
-		header += styleDim.Render("  (showing closed)")
+		header += th.HeaderMeta.Render("  (showing closed)")
 	}
 
-	left := m.list.View()
-	if box := m.warningBox(m.listWidth()); box != "" {
+	listW, bodyH := m.listWidth(), m.bodyHeight()
+	listH := bodyH - m.warningHeight()
+	left := listView(m.list)
+	if th.Panes {
+		left = titledBox("threads", left, listW, listH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
+	}
+	if box := m.warningBox(listW); box != "" {
 		left = lipgloss.JoinVertical(lipgloss.Left, box, left)
 	}
 	body := left
 	if m.width >= minDetailWidth {
+		detailW := m.width - listW - 1
+		detail := m.viewDetail(detailW)
+		if th.Panes {
+			detail = titledBox("detail", detail, detailW, bodyH, th.PaneBorder, th.PaneStyle, th.PaneTitle, th.PanePadding)
+		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(m.listWidth()).Render(left),
-			m.viewDetail(m.width-m.listWidth()-1))
+			lipgloss.NewStyle().Width(listW).Render(left), " ", detail)
 	}
 
-	footer := "a: add  A: add+edit  e: edit  d/D: done  x/X: abandon  c: closed  p/[/]: project  /: filter  ?: help  q: quit"
+	footer := m.footerKeys("a: add", "A: add+edit", "e: edit", "d/D: done", "x/X: abandon",
+		"c: closed", "p/[/]: project", "/: filter", "?: help", "q: quit")
 	switch m.mode {
 	case modeAdd:
-		footer = m.input.View() + styleDim.Render("   (enter: save, esc: cancel)")
+		footer = th.Prompt.Render(m.input.View()) + th.Footer.Render("   (enter: save, esc: cancel)")
 	case modeNote:
-		footer = m.input.View() + styleDim.Render("   (enter: apply, esc: cancel)")
+		footer = th.Prompt.Render(m.input.View()) + th.Footer.Render("   (enter: apply, esc: cancel)")
 	}
 	return m.frame(header, body, footer)
 }
 
+// listView renders a list without the blank line the component leaves
+// where its (hidden) title bar would be, unless a filter is being typed
+// there.
+func listView(l list.Model) string {
+	v := l.View()
+	if !l.SettingFilter() && l.FilterState() != list.FilterApplied {
+		v = strings.TrimPrefix(v, "\n")
+	}
+	return v
+}
+
+// footerKeys renders "key: what" hints with the key picked out.
+func (m *Model) footerKeys(hints ...string) string {
+	th := m.theme
+	parts := make([]string, 0, len(hints))
+	for _, h := range hints {
+		k, v, ok := strings.Cut(h, ": ")
+		if !ok {
+			parts = append(parts, th.Footer.Render(h))
+			continue
+		}
+		parts = append(parts, th.FooterKey.Render(k)+th.Footer.Render(": "+v))
+	}
+	return strings.Join(parts, th.Footer.Render("  "))
+}
+
 func (m *Model) frame(header, body, footer string) string {
+	th := m.theme
 	if m.err != nil {
-		footer = styleError.Render(m.err.Error())
+		footer = th.Error.Render(m.err.Error())
 	} else if m.status != "" && m.mode != modeAdd && m.mode != modeNote {
-		footer = m.status + styleDim.Render("   "+footer)
+		footer = th.Status.Render(m.status) + "   " + footer
 	}
 	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)
-	return styleHeader.Render(truncate(header, m.width)) + "\n" + body + "\n" + truncate(footer, m.width)
+	if m.mode == modeProjects {
+		header = th.Header.Render(header)
+	}
+	return truncate(header, m.width) + "\n" + body + "\n" + truncate(footer, m.width)
 }
 
 func (m *Model) viewDetail(width int) string {
@@ -688,22 +723,33 @@ func (m *Model) viewDetail(width int) string {
 	if t == nil {
 		return ""
 	}
+	th := m.theme
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s\n", styleDetailHd.Render("id:     "), t.ID)
-	fmt.Fprintf(&b, "%s %s\n", styleDetailHd.Render("state:  "), t.State)
-	fmt.Fprintf(&b, "%s %s\n", styleDetailHd.Render("created:"), t.Created.Format("2006-01-02 15:04"))
+	row := func(label, value string) {
+		fmt.Fprintf(&b, "%s %s\n", th.DetailLabel.Render(label), th.DetailBody.Render(value))
+	}
+	row("id:     ", t.ID)
+	row("state:  ", string(t.State))
+	row("created:", t.Created.Format("2006-01-02 15:04"))
 	if t.Closed != nil {
-		fmt.Fprintf(&b, "%s %s\n", styleDetailHd.Render("closed: "), t.Closed.Format("2006-01-02 15:04"))
+		row("closed: ", t.Closed.Format("2006-01-02 15:04"))
 	}
 	if t.Origin != "" {
-		fmt.Fprintf(&b, "%s %s\n", styleDetailHd.Render("origin: "), t.Origin)
+		row("origin: ", string(t.Origin))
 	}
 	if t.Session != "" {
-		fmt.Fprintf(&b, "%s %s\n", styleDetailHd.Render("session:"), t.Session)
+		row("session:", t.Session)
 	}
 	b.WriteString("\n")
-	b.WriteString(t.Body)
-	return lipgloss.NewStyle().Width(width).PaddingLeft(1).Render(b.String())
+	title, rest, _ := strings.Cut(strings.TrimLeft(t.Body, "\n"), "\n")
+	b.WriteString(th.DetailTitle.Render(title))
+	b.WriteString("\n")
+	b.WriteString(th.DetailBody.Render(rest))
+	pad := 1
+	if th.Panes {
+		pad = 0
+	}
+	return lipgloss.NewStyle().Width(width).PaddingLeft(pad).Render(b.String())
 }
 
 func (m *Model) viewHelp() string {
@@ -755,27 +801,42 @@ func (d threadDelegate) Render(w io.Writer, l list.Model, index int, item list.I
 	if !ok {
 		return
 	}
+	th := d.m.theme
 	t := it.t
+	sel := index == l.Index()
+
 	glyph := " "
 	switch t.State {
 	case thread.Done:
-		glyph = "✓"
+		glyph = th.DoneStyle.Render(th.DoneGlyph)
 	case thread.Abandoned:
-		glyph = "✗"
+		glyph = th.AbandonStyle.Render(th.AbandonGlyph)
 	}
-	cursor := "  "
-	if index == l.Index() {
-		cursor = "> "
+
+	cursor := strings.Repeat(" ", lipgloss.Width(th.Cursor))
+	if sel {
+		cursor = th.CursorStyle.Render(th.Cursor)
 	}
+
 	title := t.Title()
-	line := fmt.Sprintf("%s%s %s", cursor, glyph, title)
-	if !t.IsOpen() {
-		line = styleClosed.Render(line)
-	} else if index == l.Index() {
-		line = styleSelected.Render(line)
+	meta := "  " + t.ID[len(t.ID)-4:]
+	var line string
+	switch {
+	case !t.IsOpen():
+		line = th.Closed.Render(title) + th.Meta.Render(meta)
+	case sel:
+		line = th.Selected.Render(title) + th.SelectedMeta.Render(meta)
+	default:
+		line = th.Normal.Render(title) + th.Meta.Render(meta)
 	}
-	suffix := styleDim.Render("  " + t.ID[len(t.ID)-4:])
-	fmt.Fprint(w, truncate(line+suffix, l.Width()))
+	line = cursor + glyph + " " + line
+
+	width := l.Width()
+	line = truncate(line, width)
+	if sel && th.FullRow {
+		line = th.RowBackground.Width(width).Render(line)
+	}
+	fmt.Fprint(w, line)
 }
 
 type projectItem struct {
@@ -790,23 +851,35 @@ type projectDelegate struct{ m *Model }
 func (projectDelegate) Height() int                         { return 1 }
 func (projectDelegate) Spacing() int                        { return 0 }
 func (projectDelegate) Update(tea.Msg, *list.Model) tea.Cmd { return nil }
-func (projectDelegate) Render(w io.Writer, l list.Model, index int, item list.Item) {
+func (d projectDelegate) Render(w io.Writer, l list.Model, index int, item list.Item) {
 	it, ok := item.(projectItem)
 	if !ok {
 		return
 	}
-	cursor := "  "
-	if index == l.Index() {
-		cursor = "> "
+	th := d.m.theme
+	sel := index == l.Index()
+
+	cursor := strings.Repeat(" ", lipgloss.Width(th.Cursor))
+	if sel {
+		cursor = th.CursorStyle.Render(th.Cursor)
 	}
-	line := fmt.Sprintf("%s%-4d %s", cursor, it.open, it.p.DisplayName())
+	count := fmt.Sprintf("%-4d ", it.open)
+	name := it.p.DisplayName()
+	var line string
+	if sel {
+		line = th.Selected.Render(count + name)
+	} else {
+		line = th.Normal.Render(count + name)
+	}
 	if it.p.Name != "" {
-		line += styleDim.Render("  " + it.p.ID)
+		line += th.Meta.Render("  " + it.p.ID)
 	}
-	if index == l.Index() {
-		line = styleSelected.Render(line)
+	line = cursor + line
+	line = truncate(line, l.Width())
+	if sel && th.FullRow {
+		line = th.RowBackground.Width(l.Width()).Render(line)
 	}
-	fmt.Fprint(w, truncate(line, l.Width()))
+	fmt.Fprint(w, line)
 }
 
 // Run starts the program on the terminal.
