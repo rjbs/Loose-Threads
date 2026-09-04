@@ -32,15 +32,24 @@ func runBrowse(args []string) error {
 	if err != nil {
 		return err
 	}
-	start := *projectID
+	// Outside any repository there is no project to show, so open on the
+	// picker instead of inventing a path-identified one.
+	start, picker := *projectID, false
 	if start == "" {
-		if id, err := project.Identify("."); err == nil {
+		id, err := project.Identify(".")
+		switch {
+		case err != nil || id.Source == "path":
+			picker = true
+		default:
 			start = id.ID
 		}
 	}
 	m, err := tui.New(s, start)
 	if err != nil {
 		return err
+	}
+	if picker {
+		m.StartInPicker()
 	}
 	if *themeName != "" {
 		th, ok := tui.LookupTheme(*themeName)

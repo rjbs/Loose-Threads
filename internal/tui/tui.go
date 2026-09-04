@@ -257,6 +257,9 @@ func (m *Model) poll() {
 	if err := m.loadProjects(keep); err != nil {
 		m.err = err
 	}
+	if m.mode == modeProjects {
+		m.refreshPicker()
+	}
 }
 
 func (m *Model) project() *store.Project {
@@ -429,31 +432,41 @@ func (m *Model) edit(t *thread.Thread) tea.Cmd {
 	})
 }
 
+// StartInPicker opens the browser on the project picker instead of a
+// project's threads, for directories that belong to no project.
+func (m *Model) StartInPicker() {
+	m.openProjects()
+	m.plist.Select(0)
+}
+
+// openProjects switches to the picker, reading each project's threads
+// once so the right-hand pane can preview them.
 func (m *Model) openProjects() {
 	var items []list.Item
 	for _, p := range m.projects {
-		items = append(items, projectItem{p, m.openCount(p)})
+		ths := m.threads
+		if p != m.project() {
+			ths, _, _ = m.store.Threads(p)
+		}
+		n := 0
+		for _, t := range ths {
+			if t.IsOpen() {
+				n++
+			}
+		}
+		items = append(items, projectItem{p, ths, n})
 	}
 	m.plist.SetItems(items)
 	m.plist.Select(m.cur)
 	m.mode = modeProjects
 }
 
-func (m *Model) openCount(p *store.Project) int {
-	if p == m.project() {
-		return m.openCurrent()
-	}
-	ths, _, err := m.store.Threads(p)
-	if err != nil {
-		return 0
-	}
-	n := 0
-	for _, t := range ths {
-		if t.IsOpen() {
-			n++
-		}
-	}
-	return n
+// refreshPicker rebuilds the picker's items after the store changed,
+// keeping the highlighted row.
+func (m *Model) refreshPicker() {
+	idx := m.plist.Index()
+	m.openProjects()
+	m.plist.Select(min(idx, max(len(m.plist.Items())-1, 0)))
 }
 
 func (m *Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -463,11 +476,11 @@ func (m *Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	switch msg.String() {
-	case "q", "esc", "p":
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "esc", "p":
 		m.mode = modeThreads
 		return m, nil
-	case "ctrl+c":
-		return m, tea.Quit
 	case "enter":
 		if it, ok := m.plist.SelectedItem().(projectItem); ok {
 			for i, p := range m.projects {
@@ -617,7 +630,11 @@ func (m *Model) layout() {
 		w, h = w-2-m.theme.PanePadding, h-2
 	}
 	m.list.SetSize(max(w, 1), max(h, 1))
-	m.plist.SetSize(m.width, m.bodyHeight())
+	pw, ph := m.listWidth(), m.bodyHeight()
+	if m.theme.Panes {
+		pw, ph = pw-2-m.theme.PanePadding, ph-2
+	}
+	m.plist.SetSize(max(pw, 1), max(ph, 1))
 	m.input.Width = max(m.width-len(m.input.Prompt)-2, 10)
 }
 
@@ -631,7 +648,7 @@ func (m *Model) View() string {
 	case modeHelp:
 		return m.viewHelp()
 	case modeProjects:
-		return m.frame("projects", listView(m.plist), m.footerKeys("enter: select", "/: filter", "esc: back"))
+		return m.viewPicker()
 	}
 
 	header := th.Header.Render("no projects")
@@ -697,6 +714,65 @@ func listView(l list.Model) string {
 	return v
 }
 
+// viewPicker is the two-pane project picker: projects on the left, the
+// highlighted project's open threads on the right.
+func (m *Model) viewPicker() string {
+	th := m.theme
+	listW, bodyH := m.listWidth(), m.bodyHeight()
+
+	left := listView(m.plist)
+	if th.Panes {
+		left = titledBox("projects", left, listW, bodyH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
+	}
+	body := left
+	if m.width >= minDetailWidth {
+		detailW := m.width - listW - 1
+		var right string
+		if th.Panes {
+			right = m.viewPickerPreview(detailW - 2 - th.PanePadding)
+			right = titledBox("threads", right, detailW, bodyH, th.PaneBorder, th.PaneStyle, th.PaneTitle, th.PanePadding)
+		} else {
+			right = m.viewPickerPreview(detailW)
+		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(listW).Render(left), " ", right)
+	}
+
+	header := th.Header.Render(headerGlyph+"projects") + th.HeaderMeta.Render(fmt.Sprintf("  %d", len(m.projects)))
+	footer := m.footerKeys("enter: select", "/: filter", "esc: back", "q: quit")
+	return m.frame(header, body, footer)
+}
+
+// viewPickerPreview lists the highlighted project's open threads.
+func (m *Model) viewPickerPreview(width int) string {
+	it, ok := m.plist.SelectedItem().(projectItem)
+	if !ok {
+		return ""
+	}
+	th := m.theme
+	var b strings.Builder
+	b.WriteString(th.DetailTitle.Render(it.p.DisplayName()))
+	if it.p.Name != "" {
+		b.WriteString(th.Meta.Render("  " + it.p.ID))
+	}
+	b.WriteString(th.Meta.Render(fmt.Sprintf("  %d open", it.open)))
+	b.WriteString("\n\n")
+	if it.open == 0 {
+		b.WriteString(th.Meta.Render("no open threads"))
+	}
+	for _, t := range it.threads {
+		if !t.IsOpen() {
+			continue
+		}
+		line := th.Normal.Render(t.Title()) + th.Meta.Render("  "+t.ID[len(t.ID)-4:])
+		b.WriteString(truncate(line, width) + "\n")
+	}
+	pad := 1
+	if th.Panes {
+		pad = 0
+	}
+	return lipgloss.NewStyle().Width(width).PaddingLeft(pad).Render(b.String())
+}
+
 // footerKeys renders "key: what" hints with the key picked out.
 func (m *Model) footerKeys(hints ...string) string {
 	th := m.theme
@@ -721,9 +797,6 @@ func (m *Model) frame(header, body, footer string) string {
 	}
 	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)
-	if m.mode == modeProjects {
-		header = th.Header.Render(header)
-	}
 	return truncate(header, m.width) + "\n" + body + "\n" + truncate(footer, m.width)
 }
 
@@ -849,8 +922,9 @@ func (d threadDelegate) Render(w io.Writer, l list.Model, index int, item list.I
 }
 
 type projectItem struct {
-	p    *store.Project
-	open int
+	p       *store.Project
+	threads []*thread.Thread
+	open    int
 }
 
 func (i projectItem) FilterValue() string { return i.p.DisplayName() }

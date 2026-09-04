@@ -221,7 +221,11 @@ the time of this writing; pin one version at the start and read that
 version's docs rather than trusting memory.  Lists threads for one project or
 all projects, with hotkeys for the common edits:
 
-* move between threads and projects
+* move between threads and projects; the project picker is itself
+  two-pane, previewing the highlighted project's open threads
+* outside any git repository, open on the picker rather than invent a
+  path-identified project (threads for non-repositories are unsupported
+  until someone needs them)
 * toggle done, abandon, reopen
 * show or hide closed threads
 * add a new thread (title prompt, then optionally the editor)

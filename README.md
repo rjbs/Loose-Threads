@@ -64,8 +64,11 @@ without being told.
 In `lt browse`: `a` adds a thread, `A` adds and opens it in your editor,
 `e` or enter edits, `d` marks done, `x` marks abandoned (either again
 reopens), `D` and `X` do the same after asking for a one-line note
-saying why, `c` shows closed threads, `p` picks a project, `[` and `]`
-step between projects, `/` filters, `?` lists everything.
+saying why, `c` shows closed threads, `p` opens the project picker
+(projects on the left, the highlighted project's open threads on the
+right), `[` and `]` step between projects, `/` filters, `?` lists
+everything.  Run outside any git repository, the browser opens on the
+picker, since there is no project to show.
 
 The browser's default theme, `manxome`, follows the Vim colorscheme of
 that name.  Others exist for comparison: `lt browse -theme charm`, or
