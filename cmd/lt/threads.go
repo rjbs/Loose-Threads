@@ -6,11 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/rjbs/loosethreads/internal/editor"
 	"github.com/rjbs/loosethreads/internal/store"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
@@ -313,30 +312,8 @@ func runEdit(args []string) error {
 	return editFile(c.store.ThreadPath(c.project, t.ID))
 }
 
-// editFile runs $VISUAL or $EDITOR on path, through the shell so that an
-// editor setting with arguments or quoting works.  Vim-family editors are
-// started with the cursor on the first body line, past the frontmatter.
 func editFile(path string) error {
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "vi"
-	}
-
-	var extra []string
-	base := filepath.Base(strings.Fields(editor)[0])
-	switch base {
-	case "vi", "vim", "nvim":
-		// Go to line 1 first so the search finds the closing delimiter
-		// regardless of where the editor would otherwise start.
-		extra = []string{"-c", "1", "-c", "/^---$/+1"}
-	}
-
-	args := append([]string{"-c", editor + ` "$@"`, base}, extra...)
-	args = append(args, path)
-	cmd := exec.Command("sh", args...)
+	cmd := editor.Command(path)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
