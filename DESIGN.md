@@ -65,9 +65,15 @@ conversation.
 
 ### Thread ids
 
-The filename is the id.  It should sort by creation time and be short
-enough to type: `YYYY-MM-DD-xxxx` where `xxxx` is a few random base32
-characters.  Uniqueness only matters within one project directory.
+The filename is the id: `YYYY-MM-DD-xxxx`, where `xxxx` is four random
+characters from a lowercase alphabet with the confusable ones removed.
+Ids carry only the date, so listings sort by the `created` timestamp
+and use the id as a tiebreaker.  `created` is recorded to the second,
+so threads added within one second (a batch of `lt add` calls from one
+shell command, say) still fall back to the random suffix; see *Open
+questions*.  Uniqueness only matters within one project directory, and
+a thread may be referred to by any unique suffix of its id, so the four
+random characters usually suffice.
 
 ### Concurrency
 
@@ -129,34 +135,44 @@ one implementation of the file format and of state changes, shared by the
 CLI, the TUI, and the MCP server.  The order below is also the build
 order: each layer is useful on its own before the next exists.
 
-### 1. Library: the `thread` and `store` packages
+### 1. Library: `internal/thread`, `store`, `project`, `editor`
 
 Storage and parsing, no UI.
 
-* locate the store, list projects, list threads with filtering
-* parse and serialize thread files
-* create, update state, rewrite body
-* derive project identity from a directory
+* `thread`: parse and serialize thread files, title, state changes, ids
+* `store`: locate the store, project directories, list and write
+  threads atomically, resolve ids by suffix, the shared JSON view
+* `project`: derive project identity from a directory
+* `editor`: build the `$EDITOR` command, with the Vim cursor positioning
+
+The TUI and MCP server live in `internal/tui` and `internal/mcpserver`;
+`cmd/lt` is the command line over all of them.
 
 ### 2. CLI: `lt`
 
 Thin wrapper on the library.  Used by the human, by hooks, and by the
 agent if no MCP server is running.  Rough shape:
 
-    lt add [--project ID] [--session ID] "title" [< body]
-    lt list [--scope session|project|all] [--all-states]
-    lt show THREAD
-    lt done THREAD
-    lt abandon THREAD
-    lt reopen THREAD
+    lt add "title" [-body TEXT | < body] [-project ID] [-session ID]
+                                [-transcript PATH] [-origin agent|human]
+    lt list [-scope session|project|all] [-all-states] [-json]
+    lt show THREAD [-json]
+    lt done THREAD...
+    lt abandon THREAD...
+    lt reopen THREAD...
     lt edit THREAD              # opens $EDITOR
-    lt project-id [DIR]         # print the derived identity
+    lt project-id [DIR] [-v]    # print the derived identity
     lt browse                   # the TUI
+    lt mcp                      # the MCP server, on stdio
     lt hook session-start       # see Claude Code integration
     lt hook pre-compact
 
-Machine-readable output (`--json`) on `list` and `show` so hooks and the
-MCP server can share the CLI or the library as convenient.
+Flags and positional arguments may be interleaved.  THREAD is a full id
+or a unique suffix.  Inside a Claude Code session the environment
+supplies defaults: `-session` from `CLAUDE_CODE_SESSION_ID`, and
+`-origin agent` whenever `CLAUDECODE` or that variable is set, so the
+agent records provenance without being told.  Machine-readable output
+(`-json`) on `list` and `show` uses the same view as the MCP tools.
 
 ### 3. TUI: `lt browse`
 
@@ -250,8 +266,9 @@ already this session" versus "you also have these from before."
 ## Agent workflow, end to end
 
 1. Session starts.  Hook injects: session id, project id, open threads.
-2. During work, something gets deferred.  Agent calls `add_thread` with
-   the title, a short body explaining the context, and its session id.
+2. During work, something gets deferred.  Agent runs `lt add` (or calls
+   `add_thread`) with the title, a short body explaining the context,
+   and its session id.
 3. Before compaction, the hook prompts the agent to record anything not
    yet written down.
 4. Human runs `lt browse` at leisure, edits, closes, or reprioritizes.
@@ -259,6 +276,10 @@ already this session" versus "you also have these from before."
 
 ## Open questions
 
+* **Same-second ordering.**  `created` has one-second precision, so a
+  burst of adds ties and sorts by random suffix.  Sub-second timestamps
+  in the file or a time component in the id would fix it; neither is
+  worth the ugliness until it bites.
 * **Ordering and priority.**  Creation order is the only ordering
   defined so far.  Do we want a priority field, or is manual reordering
   in the TUI enough?  Leaning: no priority field until it hurts.
