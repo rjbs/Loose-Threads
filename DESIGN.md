@@ -101,10 +101,12 @@ all projects means walking the tree.
 
 ## Components
 
-Everything is Perl, v5.36, one distribution.  The order below is also
-the build order: each layer is useful on its own before the next exists.
+Everything is one Go binary, `lt`, with subcommands.  One language means
+one implementation of the file format and of state changes, shared by the
+CLI, the TUI, and the MCP server.  The order below is also the build
+order: each layer is useful on its own before the next exists.
 
-### 1. Library: `LooseThreads`
+### 1. Library: the `thread` and `store` packages
 
 Storage and parsing, no UI.
 
@@ -135,7 +137,10 @@ MCP server can share the CLI or the library as convenient.
 
 ### 3. TUI: `lt browse`
 
-A terminal browser over the store.  Lists threads for one project or
+A terminal browser over the store, built on Bubble Tea and the bubbles
+components.  Bubble Tea was changing its API between v1 and v2 around
+the time of this writing; pin one version at the start and read that
+version's docs rather than trusting memory.  Lists threads for one project or
 all projects, with hotkeys for the common edits:
 
 * move between threads and projects
@@ -147,11 +152,10 @@ all projects, with hotkeys for the common edits:
 When opening a thread in Vim the invocation can position the cursor on
 the title line, so the frontmatter-first layout costs nothing.
 
-TUI library is undecided; see *Open questions*.
+### 4. MCP server: `lt mcp`
 
-### 4. MCP server
-
-Exposes the library to Claude Code as typed tools.  Small surface:
+Exposes the library to Claude Code as typed tools over stdio, using the
+official Go MCP SDK.  Small surface:
 
 * `add_thread(title, body?, project?, session?)`
 * `list_threads(scope?, include_closed?)`
@@ -199,9 +203,6 @@ already this session" versus "you also have these from before."
 
 ## Open questions
 
-* **TUI toolkit.**  Curses::UI, a hand-rolled Term::ReadKey loop, or
-  something like Term::Choose.  Decide when we get there; the library
-  and CLI do not depend on it.
 * **Ordering and priority.**  Creation order is the only ordering
   defined so far.  Do we want a priority field, or is manual reordering
   in the TUI enough?  Leaning: no priority field until it hurts.
