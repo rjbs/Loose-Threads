@@ -232,14 +232,13 @@ func init() {
 
 func init() {
 	// manxome: the palette of rjbs's Vim colorscheme of the same name, on
-	// the charm layout.  Yellow for titles, cyan for structure, the cursor
-	// line as white on blue, green and red for done and abandoned, grey
-	// for what can be ignored.  Plain ANSI colors, so it follows whatever
+	// the charm layout.  Yellow for titles and the selection's gutter bar,
+	// cyan for structure, bright white for the selected title, green and
+	// red for done and abandoned, grey for what can be ignored.  Plain ANSI colors, so it follows whatever
 	// the terminal's palette makes of them.
 	yellow := c("11")
 	cyan := c("6")
 	brightCyan := c("14")
-	blue := c("4")
 	brightBlue := c("12")
 	green := c("10")
 	red := c("9")
@@ -247,30 +246,28 @@ func init() {
 	white := c("15")
 	text := c("7")
 	registerTheme(Theme{
-		Name:          "manxome",
-		Header:        lipgloss.NewStyle().Bold(true).Foreground(yellow),
-		HeaderMeta:    lipgloss.NewStyle().Foreground(grey),
-		Cursor:        "┃ ",
-		CursorStyle:   lipgloss.NewStyle().Foreground(brightCyan).Background(blue),
-		Selected:      lipgloss.NewStyle().Bold(true).Foreground(white).Background(blue),
-		SelectedMeta:  lipgloss.NewStyle().Foreground(text).Background(blue),
-		Normal:        lipgloss.NewStyle().Foreground(text),
-		Meta:          lipgloss.NewStyle().Foreground(grey),
-		Closed:        lipgloss.NewStyle().Foreground(grey).Strikethrough(true),
-		DoneGlyph:     "✓",
-		AbandonGlyph:  "✗",
-		DoneStyle:     lipgloss.NewStyle().Foreground(green),
-		AbandonStyle:  lipgloss.NewStyle().Foreground(red),
-		FullRow:       true,
-		RowBackground: lipgloss.NewStyle().Background(blue),
-		DetailLabel:   lipgloss.NewStyle().Foreground(cyan),
-		DetailTitle:   lipgloss.NewStyle().Bold(true).Foreground(yellow),
-		DetailBody:    lipgloss.NewStyle().Foreground(text),
-		Footer:        lipgloss.NewStyle().Foreground(grey),
-		FooterKey:     lipgloss.NewStyle().Foreground(brightCyan),
-		Status:        lipgloss.NewStyle().Foreground(green),
-		Error:         lipgloss.NewStyle().Bold(true).Foreground(red),
-		Prompt:        lipgloss.NewStyle().Foreground(yellow),
+		Name:         "manxome",
+		Header:       lipgloss.NewStyle().Bold(true).Foreground(yellow),
+		HeaderMeta:   lipgloss.NewStyle().Foreground(grey),
+		Cursor:       "┃ ",
+		CursorStyle:  lipgloss.NewStyle().Foreground(yellow),
+		Selected:     lipgloss.NewStyle().Bold(true).Foreground(white),
+		SelectedMeta: lipgloss.NewStyle().Foreground(text),
+		Normal:       lipgloss.NewStyle().Foreground(text),
+		Meta:         lipgloss.NewStyle().Foreground(grey),
+		Closed:       lipgloss.NewStyle().Foreground(grey).Strikethrough(true),
+		DoneGlyph:    "✓",
+		AbandonGlyph: "✗",
+		DoneStyle:    lipgloss.NewStyle().Foreground(green),
+		AbandonStyle: lipgloss.NewStyle().Foreground(red),
+		DetailLabel:  lipgloss.NewStyle().Foreground(cyan),
+		DetailTitle:  lipgloss.NewStyle().Bold(true).Foreground(yellow),
+		DetailBody:   lipgloss.NewStyle().Foreground(text),
+		Footer:       lipgloss.NewStyle().Foreground(grey),
+		FooterKey:    lipgloss.NewStyle().Foreground(brightCyan),
+		Status:       lipgloss.NewStyle().Foreground(green),
+		Error:        lipgloss.NewStyle().Bold(true).Foreground(red),
+		Prompt:       lipgloss.NewStyle().Foreground(yellow),
 		WarningBox: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 			BorderForeground(c("214")).Foreground(white).Bold(true).PaddingLeft(1),
 		Panes:       true,
