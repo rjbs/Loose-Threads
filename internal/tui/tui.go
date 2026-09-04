@@ -568,6 +568,14 @@ func (m *Model) warnings() []string {
 	return ws
 }
 
+// warningGlyph marks each warning.  The obvious choice, U+26A0 WARNING
+// SIGN plus the emoji variation selector, is a neutral-width character
+// that terminals render at either one or two cells depending on how they
+// treat the selector, which misaligns the box border.  U+2757 is wide in
+// the Unicode tables themselves, so every layer agrees on two cells.
+// -- claude, 2026-09-04
+const warningGlyph = "\u2757"
+
 // warningBox renders the warnings in a red-bordered box of the given
 // width, or "" when there are none.
 func (m *Model) warningBox(width int) string {
@@ -576,7 +584,7 @@ func (m *Model) warningBox(width int) string {
 		return ""
 	}
 	for i, w := range ws {
-		ws[i] = "⚠️  " + w
+		ws[i] = warningGlyph + " " + w
 	}
 	return styleWarningBox.Width(max(width-2, 1)).Render(strings.Join(ws, "\n"))
 }
