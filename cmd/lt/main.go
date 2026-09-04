@@ -139,16 +139,16 @@ func defaultOrigin() thread.Origin {
 	return thread.OriginHuman
 }
 
-// context is what most commands need: the store and the current project.
-type context struct {
+// workspace is what most commands need: the store and the current project.
+type workspace struct {
 	store   *store.Store
 	project *store.Project
 }
 
-// openContext opens the store and resolves the project: projectID if
+// openWorkspace opens the store and resolves the project: projectID if
 // given, else the identity of the working directory.  When create is
 // false, a project that does not yet exist in the store is an error.
-func openContext(projectID string, create bool) (*context, error) {
+func openWorkspace(projectID string, create bool) (*workspace, error) {
 	s, err := store.Open("")
 	if err != nil {
 		return nil, err
@@ -170,39 +170,11 @@ func openContext(projectID string, create bool) (*context, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &context{store: s, project: p}, nil
+	return &workspace{store: s, project: p}, nil
 }
 
-// resolveThread finds a thread by exact id, or by a unique suffix of its
-// id, so that the four random characters suffice when they are distinct.
-func (c *context) resolveThread(ref string) (*thread.Thread, error) {
-	if t, err := c.store.Get(c.project, ref); err == nil {
-		return t, nil
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return nil, err
-	}
-
-	ths, _, err := c.store.Threads(c.project)
-	if err != nil {
-		return nil, err
-	}
-	var matches []*thread.Thread
-	for _, t := range ths {
-		if strings.HasSuffix(t.ID, ref) {
-			matches = append(matches, t)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("no thread matches %q", ref)
-	case 1:
-		return matches[0], nil
-	}
-	var ids []string
-	for _, t := range matches {
-		ids = append(ids, t.ID)
-	}
-	return nil, fmt.Errorf("%q is ambiguous: %s", ref, strings.Join(ids, ", "))
+func (c *workspace) resolveThread(ref string) (*thread.Thread, error) {
+	return c.store.Resolve(c.project, ref)
 }
 
 func now() time.Time { return time.Now().Truncate(time.Second) }

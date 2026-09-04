@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/rjbs/loosethreads/internal/editor"
 	"github.com/rjbs/loosethreads/internal/store"
@@ -22,38 +21,6 @@ func init() {
 	register(&command{"abandon", "mark a thread abandoned", stateCommand(thread.Abandoned)})
 	register(&command{"reopen", "reopen a closed thread", stateCommand(thread.Open)})
 	register(&command{"edit", "open a thread in $EDITOR", runEdit})
-}
-
-// view is the JSON shape of a thread, used by --json output and later by
-// the MCP server, so the two agree.
-type view struct {
-	ID         string     `json:"id"`
-	Project    string     `json:"project"`
-	Path       string     `json:"path"`
-	State      string     `json:"state"`
-	Title      string     `json:"title"`
-	Body       string     `json:"body"`
-	Created    time.Time  `json:"created"`
-	Closed     *time.Time `json:"closed,omitempty"`
-	Session    string     `json:"session,omitempty"`
-	Transcript string     `json:"transcript,omitempty"`
-	Origin     string     `json:"origin,omitempty"`
-}
-
-func newView(c *context, t *thread.Thread) view {
-	return view{
-		ID:         t.ID,
-		Project:    c.project.ID,
-		Path:       c.store.ThreadPath(c.project, t.ID),
-		State:      string(t.State),
-		Title:      t.Title(),
-		Body:       t.Body,
-		Created:    t.Created,
-		Closed:     t.Closed,
-		Session:    t.Session,
-		Transcript: t.Transcript,
-		Origin:     string(t.Origin),
-	}
 }
 
 func printJSON(v any) error {
@@ -92,7 +59,7 @@ func runAdd(args []string) error {
 	}
 	text = strings.TrimSpace(text)
 
-	c, err := openContext(*projectID, true)
+	c, err := openWorkspace(*projectID, true)
 	if err != nil {
 		return err
 	}
@@ -160,7 +127,7 @@ func runList(args []string) error {
 			return err
 		}
 	} else {
-		c, err := openContext(*projectID, false)
+		c, err := openWorkspace(*projectID, false)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return nil // a project with no threads has nothing to list
@@ -170,9 +137,9 @@ func runList(args []string) error {
 		projects = []*store.Project{c.project}
 	}
 
-	var views []view
+	var views []store.View
 	for _, p := range projects {
-		c := &context{store: s, project: p}
+		c := &workspace{store: s, project: p}
 		ths, errs, err := s.Threads(p)
 		if err != nil {
 			return err
@@ -187,13 +154,13 @@ func runList(args []string) error {
 			if *scope == "session" && t.Session != *session {
 				continue
 			}
-			views = append(views, newView(c, t))
+			views = append(views, c.store.View(c.project, t))
 		}
 	}
 
 	if *asJSON {
 		if views == nil {
-			views = []view{}
+			views = []store.View{}
 		}
 		return printJSON(views)
 	}
@@ -233,7 +200,7 @@ func runShow(args []string) error {
 		return fmt.Errorf("exactly one THREAD argument is required")
 	}
 
-	c, err := openContext(*projectID, false)
+	c, err := openWorkspace(*projectID, false)
 	if err != nil {
 		return err
 	}
@@ -242,7 +209,7 @@ func runShow(args []string) error {
 		return err
 	}
 	if *asJSON {
-		return printJSON(newView(c, t))
+		return printJSON(c.store.View(c.project, t))
 	}
 	data, err := t.Marshal()
 	if err != nil {
@@ -268,7 +235,7 @@ func stateCommand(target thread.State) func([]string) error {
 			return fmt.Errorf("at least one THREAD argument is required")
 		}
 
-		c, err := openContext(*projectID, false)
+		c, err := openWorkspace(*projectID, false)
 		if err != nil {
 			return err
 		}
@@ -301,7 +268,7 @@ func runEdit(args []string) error {
 		return fmt.Errorf("exactly one THREAD argument is required")
 	}
 
-	c, err := openContext(*projectID, false)
+	c, err := openWorkspace(*projectID, false)
 	if err != nil {
 		return err
 	}

@@ -185,6 +185,39 @@ func (s *Store) Projects() ([]*Project, error) {
 	return ps, nil
 }
 
+// View is the JSON shape of a thread as seen by the CLI's --json output
+// and the MCP server, so the two agree.
+type View struct {
+	ID         string     `json:"id"`
+	Project    string     `json:"project"`
+	Path       string     `json:"path"`
+	State      string     `json:"state"`
+	Title      string     `json:"title"`
+	Body       string     `json:"body"`
+	Created    time.Time  `json:"created"`
+	Closed     *time.Time `json:"closed,omitempty"`
+	Session    string     `json:"session,omitempty"`
+	Transcript string     `json:"transcript,omitempty"`
+	Origin     string     `json:"origin,omitempty"`
+}
+
+// View builds the View of t within p.
+func (s *Store) View(p *Project, t *thread.Thread) View {
+	return View{
+		ID:         t.ID,
+		Project:    p.ID,
+		Path:       s.ThreadPath(p, t.ID),
+		State:      string(t.State),
+		Title:      t.Title(),
+		Body:       t.Body,
+		Created:    t.Created,
+		Closed:     t.Closed,
+		Session:    t.Session,
+		Transcript: t.Transcript,
+		Origin:     string(t.Origin),
+	}
+}
+
 // ThreadPath returns the file path for a thread id within p.
 func (s *Store) ThreadPath(p *Project, id string) string {
 	return filepath.Join(p.Dir, id+threadExt)
@@ -231,6 +264,38 @@ func (s *Store) Get(p *Project, id string) (*thread.Thread, error) {
 	}
 	t.ID = id
 	return t, nil
+}
+
+// Resolve finds a thread in p by exact id, or by a unique suffix of its
+// id, so that the four random characters suffice when they are distinct.
+func (s *Store) Resolve(p *Project, ref string) (*thread.Thread, error) {
+	if t, err := s.Get(p, ref); err == nil {
+		return t, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
+	ths, _, err := s.Threads(p)
+	if err != nil {
+		return nil, err
+	}
+	var matches []*thread.Thread
+	for _, t := range ths {
+		if strings.HasSuffix(t.ID, ref) {
+			matches = append(matches, t)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("%w: no thread matches %q", ErrNotFound, ref)
+	case 1:
+		return matches[0], nil
+	}
+	var ids []string
+	for _, t := range matches {
+		ids = append(ids, t.ID)
+	}
+	return nil, fmt.Errorf("%q is ambiguous: %s", ref, strings.Join(ids, ", "))
 }
 
 // Create assigns t a fresh id and writes it into p.  It retries on the

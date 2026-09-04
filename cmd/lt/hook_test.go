@@ -44,8 +44,14 @@ func TestHookSessionStart(t *testing.T) {
 	closed := strings.TrimSpace(w.check("add closed", 0, idPat, "add", "Closed"))
 	w.check("close it", 0, `done`, "done", closed)
 
-	w.checkHook("lists open threads with marks", "session-start", input("s1"), "SessionStart",
-		`(?s)Open threads for this project \(2\):\n\n\* `+regexp.QuoteMeta(mine)+`  Mine\n  `+regexp.QuoteMeta(other)+`  Theirs\n\n\(\* marks`)
+	// The two threads share a creation date, so their order is arbitrary;
+	// check each line separately.
+	w.checkHook("lists open threads", "session-start", input("s1"), "SessionStart",
+		`(?s)Open threads for this project \(2\):\n\n.*\n\n\(\* marks`)
+	w.checkHook("marks this session's thread", "session-start", input("s1"), "SessionStart",
+		`(?m)^\* `+regexp.QuoteMeta(mine)+`  Mine$`)
+	w.checkHook("leaves other session's thread unmarked", "session-start", input("s1"), "SessionStart",
+		`(?m)^  `+regexp.QuoteMeta(other)+`  Theirs$`)
 
 	w.checkHook("after compaction", "session-start", compact, "SessionStart",
 		`(?s)^# Loose Threads\n\nContext was just compacted\..*Open threads for this project \(2\)`)

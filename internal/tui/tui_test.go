@@ -210,7 +210,7 @@ func TestProjectSwitching(t *testing.T) {
 	checkView(t, "previous", m, []string{projB}, nil)
 
 	press(m, "p")
-	checkView(t, "picker", m, []string{"projects", "1    "+projA, "1    "+projB}, nil)
+	checkView(t, "picker", m, []string{"projects", "1    " + projA, "1    " + projB}, nil)
 	press(m, "k", "enter")
 	checkView(t, "picked", m, []string{projA, "Alpha one"}, nil)
 }
