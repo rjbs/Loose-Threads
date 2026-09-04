@@ -839,30 +839,85 @@ func (m *Model) viewDetail(width int) string {
 	return lipgloss.NewStyle().Width(width).PaddingLeft(pad).Render(b.String())
 }
 
+// helpSections is the key reference shown by "?".  Each entry is a key
+// (or keys) and what it does; blank keys are section headings.
+var helpSections = [][2]string{
+	{"", "Moving around"},
+	{"j / k, ↓ / ↑", "move"},
+	{"g / G", "first / last"},
+	{"/", "filter by title"},
+	{"p", "project picker"},
+	{"[ / ]", "previous / next project"},
+
+	{"", "Threads"},
+	{"a", "add a thread"},
+	{"A", "add and open in $EDITOR"},
+	{"e, enter", "open in $EDITOR"},
+	{"d", "mark done (again to reopen)"},
+	{"x", "mark abandoned (again to reopen)"},
+	{"D / X", "the same, after asking why"},
+
+	{"", "The view"},
+	{"c", "show / hide closed threads"},
+	{"r, ctrl-r", "hard refresh (hides closed)"},
+	{"?", "this help"},
+	{"q", "quit"},
+}
+
+// helpNotes are paragraphs; the view wraps them to the pane.
+const helpNotes = "The list refreshes itself as the store changes.  A thread someone else closes " +
+	"stays on screen, struck through, until a hard refresh.  A thread you close here " +
+	"disappears at once.\n\n" +
+	"Threads are Markdown files with YAML frontmatter, one per file, under " +
+	"$LOOSETHREADS_HOME.  The same store is what \"lt\" and the MCP server use."
+
 func (m *Model) viewHelp() string {
-	help := `Loose Threads
+	th := m.theme
+	keyW := 0
+	for _, h := range helpSections {
+		keyW = max(keyW, lipgloss.Width(h[0]))
+	}
 
-  j/k, up/down   move
-  g/G            first/last
-  /              filter by title
-  enter, e       open thread in $EDITOR
-  a              add a thread (title only)
-  A              add a thread and open it in $EDITOR
-  d              mark done (again: reopen)
-  x              mark abandoned (again: reopen)
-  D, X           the same, with a one-line note appended saying why
-  c              show/hide done and abandoned threads
-  p              pick a project
-  [ / ]          previous / next project
-  r, ctrl+r      hard refresh: reload and hide closed threads
+	var b strings.Builder
+	for i, h := range helpSections {
+		if h[0] == "" {
+			if i > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(th.DetailTitle.Render(h[1]) + "\n")
+			continue
+		}
+		pad := strings.Repeat(" ", keyW-lipgloss.Width(h[0]))
+		b.WriteString("  " + th.FooterKey.Render(h[0]) + pad + "   " + th.DetailBody.Render(h[1]) + "\n")
+	}
+	keys := b.String()
+	notes := th.Meta.Render(helpNotes)
 
-The list refreshes itself as the store changes.  A thread closed by
-someone else stays on screen, struck through, until a hard refresh.
-  ?              this help
-  q              quit
+	bodyH := m.bodyHeight()
+	var body string
+	if m.width >= minDetailWidth {
+		// Keys on the left, notes on the right, like the other views.
+		listW := m.listWidth()
+		noteW := m.width - listW - 1
+		left, right := keys, notes
+		if th.Panes {
+			left = titledBox("keys", keys, listW, bodyH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
+			right = titledBox("about", lipgloss.NewStyle().Width(noteW-2-th.PanePadding).Render(notes),
+				noteW, bodyH, th.PaneBorder, th.PaneStyle, th.PaneTitle, th.PanePadding)
+		} else {
+			right = lipgloss.NewStyle().Width(noteW).PaddingLeft(1).Render(notes)
+		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(listW).Render(left), " ", right)
+	} else {
+		body = keys + "\n" + lipgloss.NewStyle().Width(m.width).Render(notes)
+		if th.Panes {
+			body = titledBox("help", body, m.width, bodyH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
+		}
+	}
 
-Press any key to return.`
-	return lipgloss.NewStyle().Height(m.height).MaxHeight(m.height).Render(help)
+	header := th.Header.Render(headerGlyph+"help") + th.HeaderMeta.Render("  lt browse")
+	footer := th.Footer.Render("press any key to return")
+	return m.frame(header, body, footer)
 }
 
 func truncate(s string, width int) string {

@@ -324,6 +324,15 @@ func TestEveryThemeFitsTheTerminal(t *testing.T) {
 			if !strings.Contains(view, headerGlyph) {
 				t.Errorf("%s: header lacks the glyph", name)
 			}
+			for _, mode := range []string{"?", "p"} {
+				press(m, mode)
+				for i, line := range strings.Split(stripANSI(m.View()), "\n") {
+					if w := lipgloss.Width(line); w > width {
+						t.Errorf("%s @%d after %q: line %d is %d wide", name, width, mode, i, w)
+					}
+				}
+				press(m, "esc")
+			}
 		}
 	}
 }
@@ -331,9 +340,9 @@ func TestEveryThemeFitsTheTerminal(t *testing.T) {
 func TestHelpAndQuit(t *testing.T) {
 	m, _ := newModel(t, projA, fixture{projA, "One", thread.Open})
 	press(m, "?")
-	checkView(t, "help", m, []string{"Press any key to return"}, nil)
+	checkView(t, "help", m, []string{"press any key to return", "Moving around", "Threads", "hard refresh", "$LOOSETHREADS_HOME"}, nil)
 	press(m, "x")
-	checkView(t, "back", m, []string{"One"}, []string{"Press any key"})
+	checkView(t, "back", m, []string{"One"}, []string{"press any key"})
 
 	cmd := press(m, "q")
 	if cmd == nil {
