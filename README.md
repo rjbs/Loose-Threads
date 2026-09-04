@@ -63,3 +63,9 @@ In `lt browse`: `a` adds a thread, `A` adds and opens it in your editor,
 `e` or enter edits, `d` marks done, `x` marks abandoned (either again
 reopens), `c` shows closed threads, `p` picks a project, `[` and `]`
 step between projects, `/` filters, `?` lists everything.
+
+The browser refreshes itself as the store changes, so it can sit in a
+tmux window beside a Claude Code session.  New threads appear as they
+are added.  A thread that someone else closes stays on screen, struck
+through, so you notice; `r` or ctrl-R is a hard refresh that hides
+closed threads again.  Threads you close in the browser hide at once.

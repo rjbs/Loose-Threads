@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"strings"
 	"time"
 
@@ -41,6 +42,16 @@ type Model struct {
 	mode       mode
 	addAndEdit bool
 
+	// sticky holds ids of threads shown as open since the last hard
+	// refresh.  When one of them is closed by someone else it stays on
+	// screen, styled as closed, so that a glance at the list shows the
+	// transition; a hard refresh (or closing it here) clears it.
+	sticky map[string]bool
+
+	// fingerprint summarizes the store directories as last seen by the
+	// poller, so that a change on disk triggers a reload.
+	fingerprint string
+
 	list  list.Model // threads of the current project
 	plist list.Model // project picker
 	input textinput.Model
@@ -57,7 +68,7 @@ type Model struct {
 // that browsing from a fresh checkout works; its directory is created on
 // the first add.  An empty start selects the first project.
 func New(s *store.Store, start string) (*Model, error) {
-	m := &Model{store: s, now: time.Now}
+	m := &Model{store: s, now: time.Now, sticky: map[string]bool{}}
 
 	m.list = list.New(nil, threadDelegate{m}, 0, 0)
 	m.list.SetShowTitle(false)
@@ -111,6 +122,24 @@ func (m *Model) loadProjects(keep string) error {
 	return m.loadThreads()
 }
 
+// refresh is the hard refresh: forget sticky threads and reload.
+func (m *Model) refresh() error {
+	m.sticky = map[string]bool{}
+	keep := ""
+	if p := m.project(); p != nil {
+		keep = p.ID
+	}
+	return m.loadProjects(keep)
+}
+
+// switchProject moves to project index i and starts a fresh view of it.
+func (m *Model) switchProject(i int) error {
+	m.cur = i
+	m.sticky = map[string]bool{}
+	m.list.ResetSelected()
+	return m.loadThreads()
+}
+
 // loadThreads re-reads the current project's threads and rebuilds the
 // list, preserving the selection where possible.
 func (m *Model) loadThreads() error {
@@ -138,8 +167,11 @@ func (m *Model) loadThreads() error {
 	var items []list.Item
 	idx := -1
 	for _, t := range ths {
-		if !m.showClosed && !t.IsOpen() {
+		if !t.IsOpen() && !m.showClosed && !m.sticky[t.ID] {
 			continue
+		}
+		if t.IsOpen() {
+			m.sticky[t.ID] = true
 		}
 		if t.ID == selected {
 			idx = len(items)
@@ -152,7 +184,70 @@ func (m *Model) loadThreads() error {
 	} else if m.list.Index() >= len(items) && len(items) > 0 {
 		m.list.Select(len(items) - 1)
 	}
+	m.fingerprint = m.currentFingerprint()
 	return nil
+}
+
+// openCurrent returns how many of the current project's threads are open.
+func (m *Model) openCurrent() int {
+	n := 0
+	for _, t := range m.threads {
+		if t.IsOpen() {
+			n++
+		}
+	}
+	return n
+}
+
+// Polling.  A tick every pollInterval compares a fingerprint of the store
+// root and the current project directory with the last one seen; any
+// difference reloads.  Writes land by rename, which always updates the
+// directory's mtime, so listing names, sizes, and mtimes catches every
+// change without watching individual files.
+
+const pollInterval = time.Second
+
+type tickMsg struct{}
+
+func tick() tea.Cmd {
+	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+func (m *Model) currentFingerprint() string {
+	var b strings.Builder
+	dirs := []string{m.store.Root}
+	if p := m.project(); p != nil {
+		dirs = append(dirs, p.Dir)
+	}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			fmt.Fprintf(&b, "%s: %v\n", dir, err)
+			continue
+		}
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(&b, "%s %d %d\n", e.Name(), info.Size(), info.ModTime().UnixNano())
+		}
+	}
+	return b.String()
+}
+
+// poll reloads if the store has changed on disk since the last load.
+func (m *Model) poll() {
+	if m.currentFingerprint() == m.fingerprint {
+		return
+	}
+	keep := ""
+	if p := m.project(); p != nil {
+		keep = p.ID
+	}
+	if err := m.loadProjects(keep); err != nil {
+		m.err = err
+	}
 }
 
 func (m *Model) project() *store.Project {
@@ -170,7 +265,7 @@ func (m *Model) selected() *thread.Thread {
 }
 
 // Init implements tea.Model.
-func (m *Model) Init() tea.Cmd { return nil }
+func (m *Model) Init() tea.Cmd { return tick() }
 
 type editorDoneMsg struct{ err error }
 
@@ -187,6 +282,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = m.loadThreads()
 		return m, nil
+	case tickMsg:
+		m.poll()
+		return m, tick()
 	case tea.KeyMsg:
 		m.status = ""
 		m.err = nil
@@ -218,8 +316,8 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.mode = modeHelp
 		return m, nil
-	case "r":
-		m.err = m.loadProjects(m.project().ID)
+	case "r", "ctrl+r":
+		m.err = m.refresh()
 		return m, nil
 	case "c":
 		m.showClosed = !m.showClosed
@@ -231,12 +329,10 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "[", "]":
 		if n := len(m.projects); n > 1 {
 			if msg.String() == "[" {
-				m.cur = (m.cur + n - 1) % n
+				m.err = m.switchProject((m.cur + n - 1) % n)
 			} else {
-				m.cur = (m.cur + 1) % n
+				m.err = m.switchProject((m.cur + 1) % n)
 			}
-			m.list.ResetSelected()
-			m.err = m.loadThreads()
 		}
 		return m, nil
 	case "a", "A":
@@ -283,6 +379,9 @@ func (m *Model) toggleState(target thread.State) tea.Cmd {
 		m.err = err
 		return nil
 	}
+	if !t.IsOpen() {
+		delete(m.sticky, t.ID) // closed here, so it need not linger
+	}
 	m.status = fmt.Sprintf("%s: %s", t.ID, t.State)
 	m.err = m.loadThreads()
 	return nil
@@ -307,13 +406,7 @@ func (m *Model) openProjects() {
 
 func (m *Model) openCount(p *store.Project) int {
 	if p == m.project() {
-		n := 0
-		for _, t := range m.threads {
-			if t.IsOpen() {
-				n++
-			}
-		}
-		return n
+		return m.openCurrent()
 	}
 	ths, _, err := m.store.Threads(p)
 	if err != nil {
@@ -344,11 +437,9 @@ func (m *Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if it, ok := m.plist.SelectedItem().(projectItem); ok {
 			for i, p := range m.projects {
 				if p == it.p {
-					m.cur = i
+					m.err = m.switchProject(i)
 				}
 			}
-			m.list.ResetSelected()
-			m.err = m.loadThreads()
 		}
 		m.mode = modeThreads
 		return m, nil
@@ -448,6 +539,7 @@ func (m *Model) View() string {
 		if p.Name != "" {
 			header += styleDim.Render("  " + p.ID)
 		}
+		header += styleDim.Render(fmt.Sprintf("  %d open", m.openCurrent()))
 	}
 	if m.showClosed {
 		header += styleDim.Render("  (showing closed)")
@@ -515,7 +607,10 @@ func (m *Model) viewHelp() string {
   c              show/hide done and abandoned threads
   p              pick a project
   [ / ]          previous / next project
-  r              reload from disk
+  r, ctrl+r      hard refresh: reload and hide closed threads
+
+The list refreshes itself as the store changes.  A thread closed by
+someone else stays on screen, struck through, until a hard refresh.
   ?              this help
   q              quit
 

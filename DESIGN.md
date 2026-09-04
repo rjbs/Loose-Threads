@@ -175,6 +175,15 @@ all projects, with hotkeys for the common edits:
 When opening a thread in Vim the invocation can position the cursor on
 the title line, so the frontmatter-first layout costs nothing.
 
+The browser is meant to sit open in a tmux window beside a Claude Code
+session, so it polls the store (once a second, comparing a listing of
+the root and current project directory) and reloads on any change.
+Under the default hide-closed view, a thread that was on screen and is
+then closed by someone else stays on screen styled as closed, so a
+glance shows the transition.  A hard refresh (`r`, ctrl-R) returns to
+the plain open set.  Threads closed in the browser itself hide at once,
+since the user already knows.  Deleted files simply vanish.
+
 ### 4. MCP server: `lt mcp`
 
 Exposes the library to Claude Code as typed tools over stdio, using the

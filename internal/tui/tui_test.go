@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,6 +67,8 @@ func press(m *Model, keys ...string) tea.Cmd {
 			msg = tea.KeyMsg{Type: tea.KeyEsc}
 		case "down":
 			msg = tea.KeyMsg{Type: tea.KeyDown}
+		case "ctrl+r":
+			msg = tea.KeyMsg{Type: tea.KeyCtrlR}
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
@@ -238,4 +241,100 @@ func TestEmptyStore(t *testing.T) {
 	if m.err == nil {
 		t.Error("add with no project should set an error")
 	}
+}
+
+// External changes: another process writing to the store.
+
+func externalAdd(t *testing.T, s *store.Store, project, title string, at time.Time) *thread.Thread {
+	t.Helper()
+	p, err := s.Project(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	th := &thread.Thread{State: thread.Open, Body: title + "\n"}
+	if err := s.Create(p, th, at); err != nil {
+		t.Fatal(err)
+	}
+	return th
+}
+
+func externalSetState(t *testing.T, s *store.Store, project string, th *thread.Thread, state thread.State) {
+	t.Helper()
+	p, err := s.LookupProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	th.SetState(state, now)
+	if err := s.Save(p, th); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func tickOnce(m *Model) { m.Update(tickMsg{}) }
+
+func TestLiveUpdates(t *testing.T) {
+	m, s := newModel(t, projA, fixture{projA, "Original", thread.Open})
+	checkView(t, "count", m, []string{"1 open"}, nil)
+
+	added := externalAdd(t, s, projA, "Added elsewhere", now.Add(48*time.Hour))
+	checkView(t, "not yet polled", m, nil, []string{"Added elsewhere"})
+	tickOnce(m)
+	checkView(t, "appears after poll", m, []string{"Added elsewhere", "2 open"}, nil)
+
+	externalSetState(t, s, projA, added, thread.Done)
+	tickOnce(m)
+	checkView(t, "externally closed lingers, struck", m, []string{"✓ Added elsewhere", "1 open"}, nil)
+
+	tickOnce(m)
+	checkView(t, "still lingers on a quiet poll", m, []string{"✓ Added elsewhere"}, nil)
+
+	press(m, "ctrl+r")
+	checkView(t, "hard refresh hides it", m, []string{"Original"}, []string{"Added elsewhere"})
+
+	// Created and closed between polls: never shown.
+	ghost := externalAdd(t, s, projA, "Ghost", now.Add(72*time.Hour))
+	externalSetState(t, s, projA, ghost, thread.Abandoned)
+	tickOnce(m)
+	checkView(t, "never-seen closed thread hidden", m, nil, []string{"Ghost"})
+
+	// Deleted on disk: vanishes.
+	p, _ := s.LookupProject(projA)
+	os.Remove(s.ThreadPath(p, added.ID))
+	press(m, "c")
+	checkView(t, "show closed before delete check", m, []string{"Ghost"}, []string{"Added elsewhere"})
+}
+
+func TestLocalCloseHidesImmediately(t *testing.T) {
+	m, s := newModel(t, projA,
+		fixture{projA, "One", thread.Open},
+		fixture{projA, "Two", thread.Open},
+	)
+	press(m, "d")
+	checkView(t, "own close hides", m, []string{"Two", "1 open"}, []string{"One"})
+
+	// Someone else closes Two while we watch: it lingers.
+	p, _ := s.LookupProject(projA)
+	ths, _, _ := s.Threads(p)
+	for _, th := range ths {
+		if th.Title() == "Two" {
+			externalSetState(t, s, projA, th, thread.Done)
+		}
+	}
+	tickOnce(m)
+	checkView(t, "other's close lingers", m, []string{"✓ Two", "0 open"}, nil)
+}
+
+func TestProjectSwitchResetsSticky(t *testing.T) {
+	m, s := newModel(t, projA,
+		fixture{projA, "Alpha one", thread.Open},
+		fixture{projB, "Beta one", thread.Open},
+	)
+	p, _ := s.LookupProject(projA)
+	ths, _, _ := s.Threads(p)
+	externalSetState(t, s, projA, ths[0], thread.Done)
+	tickOnce(m)
+	checkView(t, "lingers", m, []string{"✓ Alpha one"}, nil)
+
+	press(m, "]", "[")
+	checkView(t, "gone after leaving and returning", m, []string{projA}, []string{"Alpha one"})
 }
