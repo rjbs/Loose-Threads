@@ -636,7 +636,7 @@ func (m *Model) View() string {
 
 	header := th.Header.Render("no projects")
 	if p := m.project(); p != nil {
-		header = th.Header.Render(p.DisplayName())
+		header = th.Header.Render(headerGlyph + p.DisplayName())
 		if p.Name != "" {
 			header += th.HeaderMeta.Render("  " + p.ID)
 		}
@@ -658,9 +658,14 @@ func (m *Model) View() string {
 	body := left
 	if m.width >= minDetailWidth {
 		detailW := m.width - listW - 1
-		detail := m.viewDetail(detailW)
+		var detail string
 		if th.Panes {
+			// Wrap to the frame's interior, not the frame; wrapping at the
+			// outer width and then squeezing produced ragged lines.
+			detail = m.viewDetail(detailW - 2 - th.PanePadding)
 			detail = titledBox("detail", detail, detailW, bodyH, th.PaneBorder, th.PaneStyle, th.PaneTitle, th.PanePadding)
+		} else {
+			detail = m.viewDetail(detailW)
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
 			lipgloss.NewStyle().Width(listW).Render(left), " ", detail)
@@ -676,6 +681,10 @@ func (m *Model) View() string {
 	}
 	return m.frame(header, body, footer)
 }
+
+// headerGlyph precedes the project name.  U+1F9F5 SPOOL OF THREAD is in
+// the emoji block proper, so its two-cell width is agreed on everywhere.
+const headerGlyph = " \U0001F9F5 "
 
 // listView renders a list without the blank line the component leaves
 // where its (hidden) title bar would be, unless a filter is being typed

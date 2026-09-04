@@ -67,9 +67,10 @@ reopens), `D` and `X` do the same after asking for a one-line note
 saying why, `c` shows closed threads, `p` picks a project, `[` and `]`
 step between projects, `/` filters, `?` lists everything.
 
-The browser has a few color themes: `lt browse -theme charm`, or set
-`LOOSETHREADS_THEME` to one of `stark` (default), `soft`, `charm`, or
-`lazy`.
+The browser's default theme, `manxome`, follows the Vim colorscheme of
+that name.  Others exist for comparison: `lt browse -theme charm`, or
+set `LOOSETHREADS_THEME` to one of `manxome`, `stark`, `soft`, `charm`,
+or `lazy`.
 
 The browser refreshes itself as the store changes, so it can sit in a
 tmux window beside a Claude Code session.  New threads appear as they

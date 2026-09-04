@@ -3,11 +3,13 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rjbs/loosethreads/internal/store"
 	"github.com/rjbs/loosethreads/internal/thread"
@@ -271,7 +273,7 @@ func TestMismatchedProjectWarning(t *testing.T) {
 func TestPathIdentityWarning(t *testing.T) {
 	m, _ := newModel(t, "/Users/someone/code/thing", fixture{"/Users/someone/code/thing", "One", thread.Open})
 	checkView(t, "path warning", m, []string{warningGlyph + " project identified by path alone", "One"}, nil)
-	if got, want := m.list.Height(), m.bodyHeight()-3; got != want {
+	if got, want := m.list.Height(), m.bodyHeight()-3-frameRows(m); got != want {
 		t.Errorf("list height %d with a one-line warning box, want %d", got, want)
 	}
 	press(m, "p")
@@ -280,8 +282,49 @@ func TestPathIdentityWarning(t *testing.T) {
 
 	m2, _ := newModel(t, projA, fixture{projA, "One", thread.Open})
 	checkView(t, "remote identity has no warning", m2, nil, []string{"path alone", warningGlyph})
-	if got, want := m2.list.Height(), m2.bodyHeight(); got != want {
+	if got, want := m2.list.Height(), m2.bodyHeight()-frameRows(m2); got != want {
 		t.Errorf("list height %d without warnings, want %d", got, want)
+	}
+}
+
+// frameRows is how many rows a framed theme spends on the list's border.
+func frameRows(m *Model) int {
+	if m.theme.Panes {
+		return 2
+	}
+	return 0
+}
+
+// stripANSI removes color escapes so widths can be measured.
+var ansi = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string { return ansi.ReplaceAllString(s, "") }
+
+func TestEveryThemeFitsTheTerminal(t *testing.T) {
+	long := strings.Repeat("word ", 60)
+	for _, name := range ThemeNames() {
+		for _, width := range []int{80, 100, 141} {
+			m, _ := newModel(t, "/Users/x/proj",
+				fixture{"/Users/x/proj", "A thread with a rather long title that will need truncating " + long, thread.Open},
+				fixture{"/Users/x/proj", "Short", thread.Done},
+			)
+			th, _ := LookupTheme(name)
+			m.SetTheme(th)
+			m.Update(tea.WindowSizeMsg{Width: width, Height: 20})
+			view := stripANSI(m.View())
+			lines := strings.Split(view, "\n")
+			if len(lines) != 20 {
+				t.Errorf("%s @%d: %d lines, want 20", name, width, len(lines))
+			}
+			for i, line := range lines {
+				if w := lipgloss.Width(line); w > width {
+					t.Errorf("%s @%d: line %d is %d wide:\n%s", name, width, i, w, line)
+				}
+			}
+			if !strings.Contains(view, headerGlyph) {
+				t.Errorf("%s: header lacks the glyph", name)
+			}
+		}
 	}
 }
 
