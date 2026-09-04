@@ -260,7 +260,7 @@ func TestMismatchedProjectWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	checkView(t, "warning shown", m2, []string{`project.yaml says "/old/path"`, "One"}, nil)
+	checkView(t, "warning shown", m2, []string{"⚠️  project.yaml id does not match directory", "One"}, nil)
 	if len(m2.projects) != 1 {
 		t.Errorf("mismatched directory listed %d times, want 1", len(m2.projects))
 	}
@@ -270,13 +270,19 @@ func TestMismatchedProjectWarning(t *testing.T) {
 
 func TestPathIdentityWarning(t *testing.T) {
 	m, _ := newModel(t, "/Users/someone/code/thing", fixture{"/Users/someone/code/thing", "One", thread.Open})
-	checkView(t, "path warning", m, []string{"identified by its checkout path", "One"}, nil)
+	checkView(t, "path warning", m, []string{"⚠️  project identified by path alone", "One"}, nil)
+	if got, want := m.list.Height(), m.bodyHeight()-3; got != want {
+		t.Errorf("list height %d with a one-line warning box, want %d", got, want)
+	}
 	press(m, "p")
-	checkView(t, "not in picker", m, nil, []string{"checkout path"})
+	checkView(t, "not in picker", m, nil, []string{"path alone"})
 	press(m, "esc")
 
 	m2, _ := newModel(t, projA, fixture{projA, "One", thread.Open})
-	checkView(t, "remote identity has no warning", m2, nil, []string{"checkout path"})
+	checkView(t, "remote identity has no warning", m2, nil, []string{"path alone", "⚠️"})
+	if got, want := m2.list.Height(), m2.bodyHeight(); got != want {
+		t.Errorf("list height %d without warnings, want %d", got, want)
+	}
 }
 
 func TestHelpAndQuit(t *testing.T) {

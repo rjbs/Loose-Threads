@@ -9,7 +9,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -189,6 +188,7 @@ func (m *Model) loadThreads() error {
 		m.list.Select(len(items) - 1)
 	}
 	m.fingerprint = m.currentFingerprint()
+	m.layout()
 	return nil
 }
 
@@ -550,7 +550,9 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 const minDetailWidth = 100
 
-// warnings returns callouts for the current project, one line each.
+// warnings returns short callouts for the current project.  They are
+// shown in a bordered box at the top of the list pane; the long
+// explanations live in DESIGN.md and the CLI's stderr messages.
 func (m *Model) warnings() []string {
 	p := m.project()
 	if p == nil {
@@ -558,40 +560,62 @@ func (m *Model) warnings() []string {
 	}
 	var ws []string
 	if p.Mismatched() {
-		ws = append(ws, fmt.Sprintf("warning: this directory is named for another project, but its project.yaml says %q; fix the id in %s",
-			p.ID, filepath.Join(p.Dir, "project.yaml")))
+		ws = append(ws, "project.yaml id does not match directory")
 	}
 	if project.IsPath(p.ID) {
-		ws = append(ws, "warning: "+project.PathWarning)
+		ws = append(ws, "project identified by path alone")
 	}
 	return ws
 }
 
-func (m *Model) bodyHeight() int {
-	h := m.height - 2
-	if m.mode != modeProjects {
-		h -= len(m.warnings())
+// warningBox renders the warnings in a red-bordered box of the given
+// width, or "" when there are none.
+func (m *Model) warningBox(width int) string {
+	ws := m.warnings()
+	if len(ws) == 0 {
+		return ""
 	}
-	return max(h, 1)
+	for i, w := range ws {
+		ws[i] = "⚠️  " + w
+	}
+	return styleWarningBox.Width(max(width-2, 1)).Render(strings.Join(ws, "\n"))
+}
+
+// warningHeight is the number of rows the warning box takes.
+func (m *Model) warningHeight() int {
+	if n := len(m.warnings()); n > 0 {
+		return n + 2 // border above and below
+	}
+	return 0
+}
+
+func (m *Model) bodyHeight() int { return max(m.height-2, 1) }
+
+func (m *Model) listWidth() int {
+	if m.width >= minDetailWidth {
+		return m.width / 2
+	}
+	return m.width
 }
 
 func (m *Model) layout() {
-	listW := m.width
-	if m.width >= minDetailWidth {
-		listW = m.width / 2
-	}
-	m.list.SetSize(listW, max(m.height-2-len(m.warnings()), 1))
-	m.plist.SetSize(m.width, max(m.height-2, 1))
+	m.list.SetSize(m.listWidth(), max(m.bodyHeight()-m.warningHeight(), 1))
+	m.plist.SetSize(m.width, m.bodyHeight())
 	m.input.Width = max(m.width-len(m.input.Prompt)-2, 10)
 }
 
 var (
-	styleHeader   = lipgloss.NewStyle().Bold(true)
-	styleDim      = lipgloss.NewStyle().Faint(true)
-	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
-	styleClosed   = lipgloss.NewStyle().Faint(true).Strikethrough(true)
-	styleError    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	styleWarning  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	styleHeader     = lipgloss.NewStyle().Bold(true)
+	styleDim        = lipgloss.NewStyle().Faint(true)
+	styleSelected   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	styleClosed     = lipgloss.NewStyle().Faint(true).Strikethrough(true)
+	styleError      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	styleWarningBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("9")).
+			Foreground(lipgloss.Color("15")).
+			Bold(true).
+			PaddingLeft(1)
 	styleDetailHd = lipgloss.NewStyle().Faint(true)
 )
 
@@ -619,11 +643,15 @@ func (m *Model) View() string {
 		header += styleDim.Render("  (showing closed)")
 	}
 
-	body := m.list.View()
+	left := m.list.View()
+	if box := m.warningBox(m.listWidth()); box != "" {
+		left = lipgloss.JoinVertical(lipgloss.Left, box, left)
+	}
+	body := left
 	if m.width >= minDetailWidth {
 		body = lipgloss.JoinHorizontal(lipgloss.Top,
-			lipgloss.NewStyle().Width(m.width/2).Render(body),
-			m.viewDetail(m.width-m.width/2-1))
+			lipgloss.NewStyle().Width(m.listWidth()).Render(left),
+			m.viewDetail(m.width-m.listWidth()-1))
 	}
 
 	footer := "a: add  A: add+edit  e: edit  d/D: done  x/X: abandon  c: closed  p/[/]: project  /: filter  ?: help  q: quit"
@@ -644,13 +672,7 @@ func (m *Model) frame(header, body, footer string) string {
 	}
 	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)
-	top := styleHeader.Render(truncate(header, m.width))
-	if m.mode != modeProjects {
-		for _, w := range m.warnings() {
-			top += "\n" + styleWarning.Render(truncate(w, m.width))
-		}
-	}
-	return top + "\n" + body + "\n" + truncate(footer, m.width)
+	return styleHeader.Render(truncate(header, m.width)) + "\n" + body + "\n" + truncate(footer, m.width)
 }
 
 func (m *Model) viewDetail(width int) string {
