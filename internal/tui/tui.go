@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -102,25 +103,25 @@ func (m *Model) loadProjects(keep string) error {
 	if err != nil {
 		return err
 	}
+	m.cur = 0
 	if keep != "" {
+		// Match by directory rather than id: a directory whose project.yaml
+		// carries the wrong id is still the directory lookups for keep
+		// would use, and must not be listed twice.
+		dir := m.store.ProjectDir(keep)
 		found := false
-		for _, p := range ps {
-			if p.ID == keep {
-				found = true
+		for i, p := range ps {
+			if p.Dir == dir {
+				m.cur, found = i, true
 				break
 			}
 		}
 		if !found {
-			ps = append(ps, &store.Project{ID: keep, Dir: m.store.ProjectDir(keep)})
+			ps = append(ps, &store.Project{ID: keep, Dir: dir})
+			m.cur = len(ps) - 1
 		}
 	}
 	m.projects = ps
-	m.cur = 0
-	for i, p := range ps {
-		if p.ID == keep {
-			m.cur = i
-		}
-	}
 	return m.loadThreads()
 }
 
@@ -542,19 +543,41 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// Layout: a one-line header, the body, and a one-line footer.  When wide
-// enough the body splits into the list and a detail pane.
+// Layout: a one-line header, an optional one-line warning, the body, and
+// a one-line footer.  When wide enough the body splits into the list and
+// a detail pane.
 
 const minDetailWidth = 100
 
+// warning returns a callout for the current project, or "".
+func (m *Model) warning() string {
+	p := m.project()
+	if p == nil || !p.Mismatched() {
+		return ""
+	}
+	return fmt.Sprintf("warning: this directory is named for another project, but its project.yaml says %q; fix the id in %s",
+		p.ID, filepath.Join(p.Dir, "project.yaml"))
+}
+
+func (m *Model) bodyHeight() int {
+	h := m.height - 2
+	if m.warning() != "" && m.mode != modeProjects {
+		h--
+	}
+	return max(h, 1)
+}
+
 func (m *Model) layout() {
-	bodyH := max(m.height-2, 1)
 	listW := m.width
 	if m.width >= minDetailWidth {
 		listW = m.width / 2
 	}
-	m.list.SetSize(listW, bodyH)
-	m.plist.SetSize(m.width, bodyH)
+	listH := m.height - 2
+	if m.warning() != "" {
+		listH--
+	}
+	m.list.SetSize(listW, max(listH, 1))
+	m.plist.SetSize(m.width, max(m.height-2, 1))
 	m.input.Width = max(m.width-len(m.input.Prompt)-2, 10)
 }
 
@@ -564,6 +587,7 @@ var (
 	styleSelected = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 	styleClosed   = lipgloss.NewStyle().Faint(true).Strikethrough(true)
 	styleError    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	styleWarning  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	styleDetailHd = lipgloss.NewStyle().Faint(true)
 )
 
@@ -614,9 +638,13 @@ func (m *Model) frame(header, body, footer string) string {
 	} else if m.status != "" && m.mode != modeAdd && m.mode != modeNote {
 		footer = m.status + styleDim.Render("   "+footer)
 	}
-	bodyH := max(m.height-2, 1)
+	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)
-	return styleHeader.Render(truncate(header, m.width)) + "\n" + body + "\n" + truncate(footer, m.width)
+	top := styleHeader.Render(truncate(header, m.width))
+	if w := m.warning(); w != "" && m.mode != modeProjects {
+		top += "\n" + styleWarning.Render(truncate(w, m.width))
+	}
+	return top + "\n" + body + "\n" + truncate(footer, m.width)
 }
 
 func (m *Model) viewDetail(width int) string {

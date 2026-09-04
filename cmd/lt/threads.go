@@ -139,6 +139,9 @@ func runList(args []string) error {
 
 	var views []store.View
 	for _, p := range projects {
+		if p.Mismatched() {
+			fmt.Fprintf(os.Stderr, "warning: %s is named for another project but its project.yaml says %q\n", p.Dir, p.ID)
+		}
 		c := &workspace{store: s, project: p}
 		ths, errs, err := s.Threads(p)
 		if err != nil {

@@ -145,7 +145,11 @@ since the directory name cannot be reversed:
 
 A directory under the store root is a project if and only if it has a
 `project.yaml`.  Listing all projects means reading one file per
-directory.
+directory.  The directory name is what lookups use, so if the id inside
+`project.yaml` disagrees with it (hand relocation carried the wrong
+file along), the id is what is wrong; the tools flag the mismatch (a
+callout in the browser, a warning on stderr from `lt list`) rather than
+guessing.
 
 ## Components
 

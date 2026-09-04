@@ -42,6 +42,14 @@ type Project struct {
 	Dir  string `yaml:"-"` // absolute path of the project directory
 }
 
+// Mismatched reports whether the project's directory name disagrees with
+// the id in its project.yaml, which happens when files are relocated by
+// hand and the old project.yaml comes along.  The directory name is what
+// lookups use, so the id inside is the one that is wrong.
+func (p Project) Mismatched() bool {
+	return p.Dir != "" && filepath.Base(p.Dir) != DirName(p.ID)
+}
+
 // DisplayName returns the project's name, or its id when it has none.
 func (p Project) DisplayName() string {
 	if p.Name != "" {

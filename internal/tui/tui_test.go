@@ -249,6 +249,25 @@ func TestProjectSwitching(t *testing.T) {
 	checkView(t, "picked", m, []string{projA, "Alpha one"}, nil)
 }
 
+func TestMismatchedProjectWarning(t *testing.T) {
+	m, s := newModel(t, projA, fixture{projA, "One", thread.Open})
+	checkView(t, "no warning normally", m, nil, []string{"warning:"})
+
+	p, _ := s.LookupProject(projA)
+	os.WriteFile(filepath.Join(p.Dir, "project.yaml"), []byte("id: /old/path\n"), 0o644)
+	m2, err := New(s, projA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	checkView(t, "warning shown", m2, []string{`project.yaml says "/old/path"`, "One"}, nil)
+	if len(m2.projects) != 1 {
+		t.Errorf("mismatched directory listed %d times, want 1", len(m2.projects))
+	}
+	press(m2, "p")
+	checkView(t, "picker has one entry, no warning", m2, []string{"1    /old/path"}, []string{"warning:", "1    " + projA})
+}
+
 func TestHelpAndQuit(t *testing.T) {
 	m, _ := newModel(t, projA, fixture{projA, "One", thread.Open})
 	press(m, "?")

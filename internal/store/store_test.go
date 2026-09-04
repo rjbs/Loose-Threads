@@ -204,6 +204,31 @@ func TestThreadsSortByCreation(t *testing.T) {
 	checkTitles(t, s, "p", 0, "earlier", "later")
 }
 
+func TestMismatched(t *testing.T) {
+	s := newStore(t)
+	addThread(t, s, "github.com/rjbs/right", "x")
+	p, _ := s.LookupProject("github.com/rjbs/right")
+	if p.Mismatched() {
+		t.Error("freshly created project reports mismatch")
+	}
+
+	// Simulate a hand relocation that carried the wrong project.yaml along.
+	if err := os.WriteFile(filepath.Join(p.Dir, "project.yaml"), []byte("id: /some/old/path\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.LookupProject("github.com/rjbs/right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Mismatched() {
+		t.Errorf("project.yaml with id %q in dir %s should be mismatched", p.ID, filepath.Base(p.Dir))
+	}
+	ps, _ := s.Projects()
+	if len(ps) != 1 || !ps[0].Mismatched() {
+		t.Errorf("Projects should report the mismatched project: %+v", ps)
+	}
+}
+
 func TestAtomicWriteLeavesNoTempFiles(t *testing.T) {
 	s := newStore(t)
 	addThread(t, s, "p", "x")
