@@ -180,18 +180,21 @@ the title line, so the frontmatter-first layout costs nothing.
 Exposes the library to Claude Code as typed tools over stdio, using the
 official Go MCP SDK.  Small surface:
 
-* `add_thread(title, body?, project?, session?)`
-* `list_threads(scope?, include_closed?)`
-* `get_thread(id)`
-* `set_thread_state(id, state)`
+* `add_thread(title, body?, project?, session?, transcript?)`
+* `list_threads(scope?, project?, session?, include_closed?)`
+* `get_thread(id, project?)`
+* `set_thread_state(id, state, project?)`
 
 The server does not know which session it is serving.  The agent passes
 project and session ids explicitly, having learned them at session
-start (below).  Defaults, when omitted, come from the server's working
-directory and nothing for session.
+start (below).  When `project` is omitted the server uses the identity
+of the directory it was started in, which Claude Code sets to the
+working directory of the session.  Registration:
 
-This is the last piece built.  If `lt` via the shell turns out to be
-enough for the agent, the MCP server may not be needed.
+    claude mcp add --scope user loosethreads -- lt mcp
+
+If `lt` via the shell turns out to be enough for the agent, the MCP
+server can simply go unregistered.
 
 ### 5. Claude Code integration
 

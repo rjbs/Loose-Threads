@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -37,5 +38,15 @@ func runMCP(args []string) error {
 			def = id.ID
 		}
 	}
-	return mcpserver.New(s, def).Run(context.Background(), &mcp.StdioTransport{})
+	err = mcpserver.New(s, def).Run(context.Background(), &mcp.StdioTransport{})
+	// When the client hangs up, the SDK reports its internal "server is
+	// closing" error with the EOF formatted in as text rather than wrapped,
+	// and the sentinel lives in an internal package, so matching the
+	// message is the only handle we have.  A hangup is how every stdio
+	// session ends, so it is not an error worth reporting.
+	// -- claude, 2026-09-04
+	if err != nil && strings.Contains(err.Error(), "server is closing") {
+		return nil
+	}
+	return err
 }
