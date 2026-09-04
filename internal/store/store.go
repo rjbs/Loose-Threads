@@ -92,10 +92,16 @@ func DirName(id string) string {
 	return slug + "-" + hash
 }
 
+// ProjectDir returns the directory a project with the given id has, or
+// would have, in the store.
+func (s *Store) ProjectDir(id string) string {
+	return filepath.Join(s.Root, DirName(id))
+}
+
 // Project returns the project with the given id, creating its directory
 // and project.yaml if they do not exist.
 func (s *Store) Project(id string) (*Project, error) {
-	dir := filepath.Join(s.Root, DirName(id))
+	dir := s.ProjectDir(id)
 	p, err := readProject(dir)
 	if err == nil {
 		return p, nil
@@ -116,7 +122,7 @@ func (s *Store) Project(id string) (*Project, error) {
 
 // LookupProject returns the project with the given id, or ErrNotFound.
 func (s *Store) LookupProject(id string) (*Project, error) {
-	p, err := readProject(filepath.Join(s.Root, DirName(id)))
+	p, err := readProject(s.ProjectDir(id))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w: project %q", ErrNotFound, id)
 	}
