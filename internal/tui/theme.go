@@ -55,6 +55,10 @@ type Theme struct {
 	FocusStyle  lipgloss.Style // border of the focused (list) pane
 	PaneTitle   lipgloss.Style
 	PanePadding int
+	// TitleInBorderColor draws each pane's title in its border's style
+	// instead of PaneTitle, so titles read as labels on the frame rather
+	// than as headings competing with the header and section titles.
+	TitleInBorderColor bool
 }
 
 var themes = map[string]Theme{}
@@ -270,12 +274,13 @@ func init() {
 		Prompt:       lipgloss.NewStyle().Foreground(yellow),
 		WarningBox: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 			BorderForeground(c("214")).Foreground(white).Bold(true).PaddingLeft(1),
-		Panes:       true,
-		PaneBorder:  lipgloss.RoundedBorder(),
-		PaneStyle:   lipgloss.NewStyle().Foreground(cyan),
-		FocusStyle:  lipgloss.NewStyle().Foreground(brightBlue),
-		PaneTitle:   lipgloss.NewStyle().Bold(true).Foreground(yellow),
-		PanePadding: 1,
+		Panes:              true,
+		PaneBorder:         lipgloss.RoundedBorder(),
+		PaneStyle:          lipgloss.NewStyle().Foreground(cyan),
+		FocusStyle:         lipgloss.NewStyle().Foreground(brightBlue),
+		PaneTitle:          lipgloss.NewStyle().Foreground(cyan),
+		PanePadding:        1,
+		TitleInBorderColor: true,
 	})
 }
 

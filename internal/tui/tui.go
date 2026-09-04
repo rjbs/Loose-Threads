@@ -615,7 +615,8 @@ func (m *Model) warningHeight() int {
 	return 0
 }
 
-func (m *Model) bodyHeight() int { return max(m.height-2, 1) }
+// bodyHeight leaves rows for the header, a blank spacer, and the footer.
+func (m *Model) bodyHeight() int { return max(m.height-3, 1) }
 
 func (m *Model) listWidth() int {
 	if m.width >= minDetailWidth {
@@ -667,7 +668,7 @@ func (m *Model) View() string {
 	listH := bodyH - m.warningHeight()
 	left := listView(m.list)
 	if th.Panes {
-		left = titledBox("threads", left, listW, listH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
+		left = m.box("threads", left, listW, listH, true)
 	}
 	if box := m.warningBox(listW); box != "" {
 		left = lipgloss.JoinVertical(lipgloss.Left, box, left)
@@ -680,7 +681,7 @@ func (m *Model) View() string {
 			// Wrap to the frame's interior, not the frame; wrapping at the
 			// outer width and then squeezing produced ragged lines.
 			detail = m.viewDetail(detailW - 2 - th.PanePadding)
-			detail = titledBox("detail", detail, detailW, bodyH, th.PaneBorder, th.PaneStyle, th.PaneTitle, th.PanePadding)
+			detail = m.box("detail", detail, detailW, bodyH, false)
 		} else {
 			detail = m.viewDetail(detailW)
 		}
@@ -702,6 +703,20 @@ func (m *Model) View() string {
 // headerGlyph precedes the project name.  U+1F9F5 SPOOL OF THREAD is in
 // the emoji block proper, so its two-cell width is agreed on everywhere.
 const headerGlyph = " \U0001F9F5 "
+
+// box frames content as a titled pane, styled for focus or not.
+func (m *Model) box(title, content string, width, height int, focused bool) string {
+	th := m.theme
+	edge := th.PaneStyle
+	if focused {
+		edge = th.FocusStyle
+	}
+	titleStyle := th.PaneTitle
+	if th.TitleInBorderColor {
+		titleStyle = edge
+	}
+	return titledBox(title, content, width, height, th.PaneBorder, edge, titleStyle, th.PanePadding)
+}
 
 // listView renders a list without the blank line the component leaves
 // where its (hidden) title bar would be, unless a filter is being typed
@@ -727,7 +742,7 @@ func (m *Model) viewPicker() string {
 
 	left := listView(m.plist)
 	if th.Panes {
-		left = titledBox("projects", left, listW, bodyH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
+		left = m.box("projects", left, listW, bodyH, true)
 	}
 	body := left
 	if m.width >= minDetailWidth {
@@ -735,7 +750,7 @@ func (m *Model) viewPicker() string {
 		var right string
 		if th.Panes {
 			right = m.viewPickerPreview(detailW - 2 - th.PanePadding)
-			right = titledBox("threads", right, detailW, bodyH, th.PaneBorder, th.PaneStyle, th.PaneTitle, th.PanePadding)
+			right = m.box("threads", right, detailW, bodyH, false)
 		} else {
 			right = m.viewPickerPreview(detailW)
 		}
@@ -802,7 +817,7 @@ func (m *Model) frame(header, body, footer string) string {
 	}
 	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)
-	return truncate(header, m.width) + "\n" + body + "\n" + truncate(footer, m.width)
+	return truncate(header, m.width) + "\n\n" + body + "\n" + truncate(footer, m.width)
 }
 
 func (m *Model) viewDetail(width int) string {
@@ -901,9 +916,8 @@ func (m *Model) viewHelp() string {
 		noteW := m.width - listW - 1
 		left, right := keys, notes
 		if th.Panes {
-			left = titledBox("keys", keys, listW, bodyH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
-			right = titledBox("about", lipgloss.NewStyle().Width(noteW-2-th.PanePadding).Render(notes),
-				noteW, bodyH, th.PaneBorder, th.PaneStyle, th.PaneTitle, th.PanePadding)
+			left = m.box("keys", keys, listW, bodyH, true)
+			right = m.box("about", lipgloss.NewStyle().Width(noteW-2-th.PanePadding).Render(notes), noteW, bodyH, false)
 		} else {
 			right = lipgloss.NewStyle().Width(noteW).PaddingLeft(1).Render(notes)
 		}
@@ -911,7 +925,7 @@ func (m *Model) viewHelp() string {
 	} else {
 		body = keys + "\n" + lipgloss.NewStyle().Width(m.width).Render(notes)
 		if th.Panes {
-			body = titledBox("help", body, m.width, bodyH, th.PaneBorder, th.FocusStyle, th.PaneTitle, th.PanePadding)
+			body = m.box("help", body, m.width, bodyH, true)
 		}
 	}
 
