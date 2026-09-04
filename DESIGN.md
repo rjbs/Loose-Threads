@@ -23,7 +23,8 @@ All threads for all projects live in one central directory, outside any
 project checkout, so the human-facing tools can navigate across projects.
 
     $LOOSETHREADS_HOME            (default: ~/.local/share/loosethreads)
-    └── <project-id>/             (one directory per project; see below)
+    └── <project-dir>/            (one directory per project; see below)
+        ├── project.yaml          (the exact project id, optional display name)
         └── <thread-id>.md        (one file per thread)
 
 A thread file is Markdown with YAML frontmatter.  The first non-blank
@@ -94,10 +95,32 @@ same repository therefore share one project, which is what we want.
 The path fallbacks are ugly but never merge unrelated projects, unlike
 a basename fallback would.
 
-The project id is used directly as a directory name, so `/` in it
-produces nested directories: `github.com/rjbs/foo/`.  The tools treat
-a project directory as "any directory containing thread files"; listing
-all projects means walking the tree.
+### Project directories
+
+Every project is one directory directly under the store root, so all
+projects are the same depth and no project id can be a prefix of
+another.  The directory name is a readable slug plus a short hash:
+
+    github.com/rjbs/Dist-Zilla      ->  github.com-rjbs-dist-zilla-8f3a1c/
+    /Users/rjbs/code/LooseThreads   ->  users-rjbs-code-loosethreads-1b2c3d/
+
+The slug is the id lowercased, with each run of characters outside
+`[a-z0-9.]` collapsed to one hyphen and the ends trimmed.  The suffix
+is the first six hex digits of the SHA-256 of the exact normalized id.
+The slug is lossy on purpose and exists only for humans; the hash
+carries uniqueness, so ids with identical slugs (`rjbs/foo-bar` and
+`rjbs/foo/bar`) still get distinct directories.  Lowercasing the slug
+also keeps case-insensitive filesystems from merging two ids.
+
+Each project directory holds a `project.yaml` recording the exact id,
+since the directory name cannot be reversed:
+
+    id: github.com/rjbs/Dist-Zilla
+    name: Dist::Zilla        # optional, for display; defaults to id
+
+A directory under the store root is a project if and only if it has a
+`project.yaml`.  Listing all projects means reading one file per
+directory.
 
 ## Components
 
