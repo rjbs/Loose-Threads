@@ -1,0 +1,222 @@
+# Loose Threads
+
+A backlog of small deferred items that come up while working with Claude
+Code: "we should fix that too, but not now."  Today those live in the
+conversation and are recovered by asking "what did we defer?", which is
+unreliable.  Loose Threads gives them a home that the agent can write to
+and read from, and that the human can skim and edit outside of any
+session.
+
+## Vocabulary
+
+* **thread**: one deferred item.  One file on disk.
+* **project**: the unit under which threads are grouped.  Identified by
+  the git remote where possible; see *Project identity*.
+* **session**: one Claude Code session.  Recorded on each thread as
+  provenance, not used as a partition.
+* **scope**: how much of the store a listing covers: this session, this
+  project, or everything.
+
+## Storage
+
+All threads for all projects live in one central directory, outside any
+project checkout, so the human-facing tools can navigate across projects.
+
+    $LOOSETHREADS_HOME            (default: ~/.local/share/loosethreads)
+    └── <project-id>/             (one directory per project; see below)
+        └── <thread-id>.md        (one file per thread)
+
+A thread file is Markdown with YAML frontmatter.  The first non-blank
+line of the body is the title.  The rest of the body is free prose:
+what we were doing, why we deferred it, anything that answers "why did I
+want this?" months later.
+
+    ---
+    state: open
+    created: 2026-09-04T12:40:00-04:00
+    session: 2f25fed4-dac5-4879-a38f-f46d45bfd92d
+    transcript: /Users/rjbs/.claude/projects/-Users-rjbs-code-Foo/2f25fed4-....jsonl
+    ---
+    Handle the empty-remote case in project_id
+
+    Came up while writing the normalizer.  We return undef and the
+    caller dies with a bad message.  Should fall back to the path.
+
+The title goes in the body rather than the frontmatter so that titles
+with colons, hashes, and brackets need no YAML quoting.  Tools that
+write files will always produce a title line; the parser defines the
+title as the first non-blank body line, truncated for display.
+
+### Frontmatter fields
+
+| field        | required | notes                                              |
+|--------------|----------|----------------------------------------------------|
+| `state`      | yes      | `open`, `done`, or `abandoned`                     |
+| `created`    | yes      | ISO 8601 with offset                               |
+| `session`    | no       | Claude Code session id, when created by the agent  |
+| `transcript` | no       | path to that session's transcript                  |
+| `closed`     | no       | when state left `open`                             |
+| `origin`     | no       | `agent` or `human`; absent means unknown           |
+
+Threads are never deleted by the tools.  `done` and `abandoned` items
+stay on disk and are hidden by default in listings.  Purging is a later
+conversation.
+
+### Thread ids
+
+The filename is the id.  It should sort by creation time and be short
+enough to type: `YYYY-MM-DD-xxxx` where `xxxx` is a few random base32
+characters.  Uniqueness only matters within one project directory.
+
+### Concurrency
+
+Distinct sessions create distinct files, so there is no shared-write
+problem in the common case.  The rare case is the TUI and an MCP call
+editing the same file.  All writers write the whole file atomically
+(write to a temp name, rename).  We do not attempt merging.
+
+## Project identity
+
+Derived from the git checkout containing the working directory.  The
+first of these that exists wins:
+
+1. the URL of the remote named `github`
+2. the URL of the remote named `gitbox`
+3. the URL of the remote named `origin`
+4. the absolute path of the git root
+5. the absolute path of the working directory (not in a checkout)
+
+Remote URLs are normalized to `host/path` with the scheme, user, port,
+and trailing `.git` removed, so that `git@github.com:rjbs/foo.git` and
+`https://github.com/rjbs/foo` are the same project.  Worktrees of the
+same repository therefore share one project, which is what we want.
+
+The path fallbacks are ugly but never merge unrelated projects, unlike
+a basename fallback would.
+
+The project id is used directly as a directory name, so `/` in it
+produces nested directories: `github.com/rjbs/foo/`.  The tools treat
+a project directory as "any directory containing thread files"; listing
+all projects means walking the tree.
+
+## Components
+
+Everything is Perl, v5.36, one distribution.  The order below is also
+the build order: each layer is useful on its own before the next exists.
+
+### 1. Library: `LooseThreads`
+
+Storage and parsing, no UI.
+
+* locate the store, list projects, list threads with filtering
+* parse and serialize thread files
+* create, update state, rewrite body
+* derive project identity from a directory
+
+### 2. CLI: `lt`
+
+Thin wrapper on the library.  Used by the human, by hooks, and by the
+agent if no MCP server is running.  Rough shape:
+
+    lt add [--project ID] [--session ID] "title" [< body]
+    lt list [--scope session|project|all] [--all-states]
+    lt show THREAD
+    lt done THREAD
+    lt abandon THREAD
+    lt reopen THREAD
+    lt edit THREAD              # opens $EDITOR
+    lt project-id [DIR]         # print the derived identity
+    lt browse                   # the TUI
+    lt hook session-start       # see Claude Code integration
+    lt hook pre-compact
+
+Machine-readable output (`--json`) on `list` and `show` so hooks and the
+MCP server can share the CLI or the library as convenient.
+
+### 3. TUI: `lt browse`
+
+A terminal browser over the store.  Lists threads for one project or
+all projects, with hotkeys for the common edits:
+
+* move between threads and projects
+* toggle done, abandon, reopen
+* show or hide closed threads
+* add a new thread (title prompt, then optionally the editor)
+* open the current thread in `$EDITOR`
+
+When opening a thread in Vim the invocation can position the cursor on
+the title line, so the frontmatter-first layout costs nothing.
+
+TUI library is undecided; see *Open questions*.
+
+### 4. MCP server
+
+Exposes the library to Claude Code as typed tools.  Small surface:
+
+* `add_thread(title, body?, project?, session?)`
+* `list_threads(scope?, include_closed?)`
+* `get_thread(id)`
+* `set_thread_state(id, state)`
+
+The server does not know which session it is serving.  The agent passes
+project and session ids explicitly, having learned them at session
+start (below).  Defaults, when omitted, come from the server's working
+directory and nothing for session.
+
+This is the last piece built.  If `lt` via the shell turns out to be
+enough for the agent, the MCP server may not be needed.
+
+### 5. Claude Code integration
+
+Hooks, all of which call `lt`:
+
+* **SessionStart**: `lt hook session-start` reads the hook JSON from
+  stdin (session id, transcript path, cwd), derives the project id, and
+  emits `additionalContext` telling the agent its session id, project
+  id, and the list of open threads for the project.  This is how the
+  agent learns its identity.  It also serves as a reminder that the
+  backlog exists.
+* **PreCompact**: `lt hook pre-compact` emits a nudge: "before context
+  is summarized, record any deferred items with Loose Threads."
+  Compaction is when these items are most often lost.
+
+Plus a paragraph in `~/.claude/CLAUDE.md`: when we defer something,
+record it as a thread; when asked what was deferred, list threads
+rather than recalling from context.
+
+The agent should distinguish scopes when reporting: "we logged this one
+already this session" versus "you also have these from before."
+
+## Agent workflow, end to end
+
+1. Session starts.  Hook injects: session id, project id, open threads.
+2. During work, something gets deferred.  Agent calls `add_thread` with
+   the title, a short body explaining the context, and its session id.
+3. Before compaction, the hook prompts the agent to record anything not
+   yet written down.
+4. Human runs `lt browse` at leisure, edits, closes, or reprioritizes.
+5. Next session starts; step 1 shows what is still open.
+
+## Open questions
+
+* **TUI toolkit.**  Curses::UI, a hand-rolled Term::ReadKey loop, or
+  something like Term::Choose.  Decide when we get there; the library
+  and CLI do not depend on it.
+* **Ordering and priority.**  Creation order is the only ordering
+  defined so far.  Do we want a priority field, or is manual reordering
+  in the TUI enough?  Leaning: no priority field until it hurts.
+* **Session-less threads.**  Threads the human adds from the TUI have no
+  session.  Fine, but the "this session" scope should not surprise
+  anyone by omitting them.
+* **Cross-project view.**  The TUI's "all projects" view is easy given
+  the layout, but what does the agent do with `scope=all`?  Probably
+  nothing by default; it exists for the human.
+* **Store location on multiple machines.**  A single directory is easy
+  to sync or keep in git.  Not designing for it yet.
+
+## Non-goals, for now
+
+* Purging or archiving closed threads.
+* Sync between machines.
+* Anything resembling a project management tool: no assignees, no due
+  dates, no dependencies.
