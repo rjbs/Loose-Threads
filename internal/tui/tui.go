@@ -708,8 +708,13 @@ const headerGlyph = " \U0001F9F5 "
 // there.
 func listView(l list.Model) string {
 	v := l.View()
-	if !l.SettingFilter() && l.FilterState() != list.FilterApplied {
-		v = strings.TrimPrefix(v, "\n")
+	if l.SettingFilter() || l.FilterState() == list.FilterApplied {
+		return v
+	}
+	// The blank title bar is a line of spaces padded to the width, not an
+	// empty line.
+	if first, rest, ok := strings.Cut(v, "\n"); ok && strings.TrimSpace(first) == "" {
+		return rest
 	}
 	return v
 }
