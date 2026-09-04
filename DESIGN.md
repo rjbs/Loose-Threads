@@ -189,7 +189,7 @@ agent if no MCP server is running.  Rough shape:
     lt reopen THREAD... [-note WHY]
     lt edit THREAD              # opens $EDITOR
     lt project-id [DIR] [-v]    # print the derived identity
-    lt browse                   # the TUI
+    lt browse                   # the TUI; bare "lt" at a terminal does the same
     lt mcp                      # the MCP server, on stdio
     lt hook session-start       # see Claude Code integration
     lt hook pre-compact

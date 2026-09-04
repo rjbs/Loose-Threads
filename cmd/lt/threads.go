@@ -87,10 +87,13 @@ func runAdd(args []string) error {
 	return nil
 }
 
-func stdinIsTerminal() bool {
-	fi, err := os.Stdin.Stat()
+func stdinIsTerminal() bool  { return isTerminal(os.Stdin) }
+func stdoutIsTerminal() bool { return isTerminal(os.Stdout) }
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
 	if err != nil {
-		return true
+		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
 }

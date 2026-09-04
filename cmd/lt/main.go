@@ -31,6 +31,15 @@ func register(c *command) { commands = append(commands, c) }
 
 func main() {
 	if len(os.Args) < 2 {
+		// Bare "lt" at a terminal opens the browser; anywhere else (a
+		// pipe, a script) it is a mistake, so print usage instead.
+		if stdoutIsTerminal() {
+			if err := runBrowse(nil); err != nil {
+				fmt.Fprintf(os.Stderr, "lt browse: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
 		usage(os.Stderr)
 		os.Exit(2)
 	}
@@ -59,6 +68,7 @@ func main() {
 
 func usage(w *os.File) {
 	fmt.Fprintln(w, "usage: lt <command> [flags] [args]")
+	fmt.Fprintln(w, "       lt                       (at a terminal: open the browser)")
 	fmt.Fprintln(w)
 	sort.Slice(commands, func(i, j int) bool { return commands[i].name < commands[j].name })
 	width := 0

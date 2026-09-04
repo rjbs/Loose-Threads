@@ -54,7 +54,7 @@ Either way, a line in `~/.claude/CLAUDE.md` helps:
     lt reopen 7k2m
     lt edit 7k2m                # in $EDITOR, cursor on the title line
     lt project-id -v            # what project is this directory?
-    lt browse                   # the TUI
+    lt browse                   # the TUI; bare "lt" at a terminal does the same
 
 Flags may follow positional arguments.  Inside a Claude Code session,
 `lt add` records the session id and marks the thread as agent-created
