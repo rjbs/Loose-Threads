@@ -187,6 +187,23 @@ func TestThreads(t *testing.T) {
 	}
 }
 
+func TestThreadsSortByCreation(t *testing.T) {
+	s := newStore(t)
+	p, _ := s.Project("p")
+	later := &thread.Thread{State: thread.Open, Body: "later\n"}
+	earlier := &thread.Thread{State: thread.Open, Body: "earlier\n"}
+	// Same day, so the ids share a date prefix; force the id order to
+	// contradict the creation order.
+	later.ID, later.Created = "2026-09-04-aaaa", now.Add(time.Hour)
+	earlier.ID, earlier.Created = "2026-09-04-zzzz", now
+	for _, th := range []*thread.Thread{later, earlier} {
+		if err := s.Save(p, th); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkTitles(t, s, "p", 0, "earlier", "later")
+}
+
 func TestAtomicWriteLeavesNoTempFiles(t *testing.T) {
 	s := newStore(t)
 	addThread(t, s, "p", "x")

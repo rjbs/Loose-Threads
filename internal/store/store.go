@@ -223,8 +223,9 @@ func (s *Store) ThreadPath(p *Project, id string) string {
 	return filepath.Join(p.Dir, id+threadExt)
 }
 
-// Threads lists every thread in p, sorted by id (which is to say, by
-// creation date).  Files that fail to parse are returned in errs rather
+// Threads lists every thread in p, oldest first by creation time, with id
+// as the tiebreaker.  Ids alone carry only the date, so same-day threads
+// would otherwise sort by their random suffix.  Files that fail to parse are returned in errs rather
 // than aborting the listing, so one bad hand edit does not hide the rest.
 func (s *Store) Threads(p *Project) (threads []*thread.Thread, errs []error, err error) {
 	entries, err := os.ReadDir(p.Dir)
@@ -244,7 +245,13 @@ func (s *Store) Threads(p *Project) (threads []*thread.Thread, errs []error, err
 		}
 		threads = append(threads, t)
 	}
-	sort.Slice(threads, func(i, j int) bool { return threads[i].ID < threads[j].ID })
+	sort.Slice(threads, func(i, j int) bool {
+		a, b := threads[i], threads[j]
+		if !a.Created.Equal(b.Created) {
+			return a.Created.Before(b.Created)
+		}
+		return a.ID < b.ID
+	})
 	return threads, errs, nil
 }
 
