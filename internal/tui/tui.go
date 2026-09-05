@@ -112,19 +112,20 @@ func (m *Model) loadProjects(keep string) error {
 	}
 	m.cur = 0
 	if keep != "" {
-		// Match by directory rather than id: a directory whose project.yaml
-		// carries the wrong id is still the directory lookups for keep
-		// would use, and must not be listed twice.
+		// Match by id, in whatever collection the project lives.  Failing
+		// that, match by the directory a new project with this id would
+		// get: a directory whose project.yaml carries the wrong id is
+		// still the one lookups would use, and must not be listed twice.
 		dir := m.store.RoutedDir(keep)
 		found := false
 		for i, p := range ps {
-			if p.Dir == dir {
+			if p.ID == keep || p.Dir == dir {
 				m.cur, found = i, true
 				break
 			}
 		}
 		if !found {
-			ps = append(ps, &store.Project{ID: keep, Dir: dir})
+			ps = append(ps, &store.Project{ID: keep, Dir: dir, Collection: m.store.Config().Route(keep)})
 			m.cur = len(ps) - 1
 		}
 	}
