@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/rjbs/loosethreads/internal/store"
@@ -17,6 +19,31 @@ func init() {
 
 // syncTimeout bounds one sync's network operations.
 const syncTimeout = 60 * time.Second
+
+// envNoPush disables background pushes after writes, for tests and for
+// anyone who prefers to sync by hand.
+const envNoPush = "LOOSETHREADS_NO_PUSH"
+
+// pushInBackground starts a detached "lt sync" for the collection holding
+// p, if it has a remote, so a write is durable on the remote within
+// seconds without making the caller wait on the network.  Failures are
+// silent here; the next foreground sync will report them.
+func pushInBackground(s *store.Store, p *store.Project) {
+	if p == nil || s.Config().Remote(p.Collection) == "" || os.Getenv(envNoPush) != "" {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	cmd := exec.Command(exe, "sync", "-quiet", "-collection", p.Collection)
+	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return
+	}
+	go cmd.Wait() // reap if we are still around; harmless if not
+}
 
 func runSync(args []string) error {
 	fs := newFlagSet("sync", "[add NAME URL]")

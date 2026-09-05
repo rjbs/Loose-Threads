@@ -49,7 +49,7 @@ func newWorld(t *testing.T) *world {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	w.env = []string{"LOOSETHREADS_HOME=" + w.store, "PATH=" + os.Getenv("PATH"), "HOME=" + base}
+	w.env = []string{"LOOSETHREADS_HOME=" + w.store, "PATH=" + os.Getenv("PATH"), "HOME=" + base, "LOOSETHREADS_NO_PUSH=1"}
 	return w
 }
 
@@ -215,4 +215,33 @@ func TestRehome(t *testing.T) {
 	w.check("threads visible again", 0, `(?s)Early one.*Early two|Early two.*Early one`, "list")
 	w.check("rehome again", 0, `nothing to do`, "rehome")
 	w.check("only one project remains", 0, `(?s)^github\.com/rjbs/testrepo\n.*Early`, "list", "-scope", "all")
+}
+
+func TestSyncCommand(t *testing.T) {
+	w := newWorld(t)
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	if out, err := exec.Command("git", "init", "-q", "--bare", "-b", "main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+
+	w.check("no remotes yet", 0, `no collections have remotes`, "sync")
+	w.check("sync add", 0, `^work: `, "sync", "add", "work", remote)
+	w.check("bad usage", 1, `usage:`, "sync", "add", "work")
+
+	// Route this project into work, then add a thread and sync.
+	os.WriteFile(filepath.Join(w.store, "config.yaml"),
+		[]byte("collections:\n  work:\n    remote: "+remote+"\nroutes:\n  - match: \"github.com/rjbs/*\"\n    collection: work\n"), 0o644)
+	_, errOut, _ := w.run("", nil, "add", "Synced thing")
+	if !strings.Contains(errOut, "in collection work") {
+		t.Fatalf("expected routing into work: %q", errOut)
+	}
+	w.check("sync pushes", 0, `^work: committed, pushed\n$`, "sync")
+	w.check("sync again", 0, `^work: up to date\n$`, "sync")
+	w.check("one collection", 0, `up to date`, "sync", "-collection", "work")
+	w.check("quiet", 0, `^$`, "sync", "-quiet")
+
+	out, err := exec.Command("git", "-C", remote, "log", "--oneline").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "lt sync from") {
+		t.Errorf("remote log: %v\n%s", err, out)
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rjbs/loosethreads/internal/store"
+	ltsync "github.com/rjbs/loosethreads/internal/sync"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
 
@@ -122,7 +123,20 @@ func (s *server) addThread(ctx context.Context, req *mcp.CallToolRequest, in add
 	if err := s.store.Create(p, t, t.Created); err != nil {
 		return nil, store.View{}, err
 	}
+	s.pushLater(p)
 	return nil, s.store.View(p, t), nil
+}
+
+// pushLater syncs p's collection in the background if it has a remote.
+func (s *server) pushLater(p *store.Project) {
+	if s.store.Config().Remote(p.Collection) == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		ltsync.Collection(ctx, s.store, p.Collection)
+	}()
 }
 
 type listInput struct {
@@ -227,5 +241,6 @@ func (s *server) setThreadState(ctx context.Context, req *mcp.CallToolRequest, i
 	if err := s.store.Save(p, t); err != nil {
 		return nil, store.View{}, err
 	}
+	s.pushLater(p)
 	return nil, s.store.View(p, t), nil
 }

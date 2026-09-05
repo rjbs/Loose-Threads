@@ -87,6 +87,7 @@ func runAdd(args []string) error {
 		return err
 	}
 	fmt.Println(t.ID)
+	pushInBackground(c.store, c.project)
 	return nil
 }
 
@@ -266,6 +267,7 @@ func stateCommand(target thread.State) func([]string) error {
 			}
 			fmt.Printf("%s: %s  %s\n", t.ID, t.State, t.Title())
 		}
+		pushInBackground(c.store, c.project)
 		return nil
 	}
 }
@@ -290,7 +292,11 @@ func runEdit(args []string) error {
 	if err != nil {
 		return err
 	}
-	return editFile(c.store.ThreadPath(c.project, t.ID))
+	if err := editFile(c.store.ThreadPath(c.project, t.ID)); err != nil {
+		return err
+	}
+	pushInBackground(c.store, c.project)
+	return nil
 }
 
 func editFile(path string) error {

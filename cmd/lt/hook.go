@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rjbs/loosethreads/internal/project"
 	"github.com/rjbs/loosethreads/internal/store"
+	ltsync "github.com/rjbs/loosethreads/internal/sync"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
 
@@ -116,6 +120,7 @@ func hookSessionStart(in hookInput) error {
 	if err != nil {
 		return err
 	}
+	syncAtStart(s, &b)
 	p, err := s.LookupProject(id.ID)
 	if err != nil {
 		b.WriteString("No threads have been recorded for this project yet.\n")
@@ -152,6 +157,23 @@ func hookSessionStart(in hookInput) error {
 		b.WriteString("\n(* marks threads recorded by this session.)\n")
 	}
 	return emitContext("SessionStart", b.String())
+}
+
+// syncAtStart pulls every synced collection so the open list reflects
+// other machines, bounded so a slow network cannot stall session start.
+// Problems are noted in the context rather than failing the hook.
+func syncAtStart(s *store.Store, b *strings.Builder) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	results, err := ltsync.All(ctx, s)
+	for _, r := range results {
+		if len(r.Conflicts) > 0 {
+			fmt.Fprintf(b, "Sync: %s\n", r)
+		}
+	}
+	if err != nil && !errors.Is(err, ltsync.ErrConflict) {
+		fmt.Fprintf(b, "Sync failed (working from the local copy): %v\n", err)
+	}
 }
 
 // hookPreCompact reminds the model to record deferred work before the

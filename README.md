@@ -41,6 +41,43 @@ Either way, a line in `~/.claude/CLAUDE.md` helps:
 > or the `add_thread` tool).  When asked what was deferred, list threads
 > rather than recalling from context.
 
+## Sync between machines
+
+Threads found on a disposable VM should not die with it.  The store is
+divided into *collections*, each a directory under the store root; a
+collection with a git remote is a clone and is synced, one without is
+not.  Projects are routed into collections by rules in
+`$LOOSETHREADS_HOME/config.yaml`:
+
+    collections:
+      work:
+        remote: git@gitbox.example.com:rjbs/threads-work.git
+      personal:
+        remote: git@github.com:rjbs/threads-personal.git
+    routes:
+      - { match: "github.com/fastmail/*", collection: work }
+      - { match: "github.com/rjbs/*",     collection: personal }
+
+Anything unrouted lands in `local`, which is never synced.  Different
+collections can point at repositories owned by different parties, so
+the work admin never sees personal threads.
+
+    lt sync add work git@gitbox.example.com:rjbs/threads-work.git
+                                # clone into place (or attach) and record it
+    lt sync                     # commit, pull, push every collection with a remote
+    lt sync -collection work
+    lt move-project work        # move this project into another collection
+
+Writes push in the background automatically (`lt add`, `done`,
+`abandon`, `reopen`, `edit`, the MCP tools, and the browser), so a
+thread is on the remote within seconds of being recorded.  The
+SessionStart hook pulls, and the browser syncs every minute.  Set
+`LOOSETHREADS_NO_PUSH=1` to sync only by hand.
+
+A conflict (the same thread changed on two machines) is left as git's
+markers; `lt sync` reports it, the thread shows as unreadable until the
+file is fixed, and the next sync commits the resolution.
+
 ## Use
 
     lt add "Handle the empty-remote case" -body "Came up while writing the normalizer."

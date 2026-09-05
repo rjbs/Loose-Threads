@@ -379,7 +379,10 @@ built until a case appears.
 ### Syncing
 
 `lt sync` runs, for each collection with a remote: commit everything,
-pull with rebase, push.  A VM disposed of without a manual sync is the
+fetch, merge, push.  (Merge rather than rebase: a conflicted merge
+leaves markers in the working tree and a state the next sync can finish
+once they are gone, where a conflicted rebase leaves the repository
+mid-operation.)  A VM disposed of without a manual sync is the
 failure mode that matters, so writes push: `lt add`, `done`, `abandon`,
 `reopen`, and the MCP equivalents commit and push in the background
 when the collection has a remote.  The laptop pulls at SessionStart and

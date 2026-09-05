@@ -4,6 +4,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/rjbs/loosethreads/internal/editor"
 	"github.com/rjbs/loosethreads/internal/project"
 	"github.com/rjbs/loosethreads/internal/store"
+	ltsync "github.com/rjbs/loosethreads/internal/sync"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
 
@@ -222,6 +224,32 @@ func tick() tea.Cmd {
 	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
+// Sync.  Every syncInterval the browser syncs collections with remotes in
+// the background; the poll then notices whatever arrived.
+
+const syncInterval = 60 * time.Second
+
+type syncTickMsg struct{}
+type syncDoneMsg struct {
+	results  []ltsync.Result
+	err      error
+	periodic bool // from the interval timer, so schedule the next one
+}
+
+func syncTick() tea.Cmd {
+	return tea.Tick(syncInterval, func(time.Time) tea.Msg { return syncTickMsg{} })
+}
+
+func (m *Model) syncNow() tea.Cmd {
+	s := m.store
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		results, err := ltsync.All(ctx, s)
+		return syncDoneMsg{results, err, true}
+	}
+}
+
 func (m *Model) currentFingerprint() string {
 	var b strings.Builder
 	dirs := []string{m.store.Root}
@@ -282,7 +310,7 @@ func (m *Model) selected() *thread.Thread {
 }
 
 // Init implements tea.Model.
-func (m *Model) Init() tea.Cmd { return tick() }
+func (m *Model) Init() tea.Cmd { return tea.Batch(tick(), m.syncNow()) }
 
 type editorDoneMsg struct{ err error }
 
@@ -298,10 +326,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("editor: %w", msg.err)
 		}
 		m.err = m.loadThreads()
-		return m, nil
+		return m, m.pushLater()
 	case tickMsg:
 		m.poll()
 		return m, tick()
+	case syncTickMsg:
+		return m, m.syncNow()
+	case syncDoneMsg:
+		for _, r := range msg.results {
+			if len(r.Conflicts) > 0 {
+				m.err = fmt.Errorf("sync: %s", r)
+			} else if r.Merged {
+				m.status = r.String()
+			}
+		}
+		if msg.err != nil && !errors.Is(msg.err, ltsync.ErrConflict) {
+			m.status = "sync failed: " + msg.err.Error()
+		}
+		if msg.periodic {
+			return m, syncTick()
+		}
+		return m, nil
 	case tea.KeyMsg:
 		m.status = ""
 		m.err = nil
@@ -427,7 +472,23 @@ func (m *Model) toggleState(target thread.State, note string) tea.Cmd {
 	}
 	m.status = fmt.Sprintf("%s: %s", t.ID, t.State)
 	m.err = m.loadThreads()
-	return nil
+	return m.pushLater()
+}
+
+// pushLater syncs the current project's collection in the background if
+// it has a remote, so browser edits reach the remote like CLI ones do.
+func (m *Model) pushLater() tea.Cmd {
+	p := m.project()
+	if p == nil || m.store.Config().Remote(p.Collection) == "" {
+		return nil
+	}
+	s, name := m.store, p.Collection
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		r, err := ltsync.Collection(ctx, s, name)
+		return syncDoneMsg{[]ltsync.Result{r}, err, false}
+	}
 }
 
 func (m *Model) edit(t *thread.Thread) tea.Cmd {
@@ -560,7 +621,7 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.addAndEdit {
 			return m, m.edit(t)
 		}
-		return m, nil
+		return m, m.pushLater()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
