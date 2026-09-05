@@ -318,6 +318,86 @@ already this session" versus "you also have these from before."
 4. Human runs `lt browse` at leisure, edits, closes, or reprioritizes.
 5. Next session starts; step 1 shows what is still open.
 
+## Sync between machines
+
+Threads are found on disposable development VMs as often as on the
+laptop, and must not die with the VM.  Primary storage stays local so
+that everything works offline; sync moves files between stores.
+
+### Collections
+
+Git syncs whole trees, so grouping for sync has to be spatial.  The
+store root holds *collections*, each a directory that may be a git
+clone; a project lives in exactly one collection.  The `local`
+collection has no remote and is never synced.
+
+    $LOOSETHREADS_HOME/
+      config.yaml                 collections and routing rules
+      local/                      no remote, never synced
+        <project-dir>/
+      personal/                   clone of a private sync repository
+        <project-dir>/
+      work/                       clone of the work sync repository
+        <project-dir>/
+
+Different collections can point at repositories owned by different
+parties, so the work git admin sees only the work collection, and a VM
+configured with only `work` has nowhere for personal threads to land.
+Project directories are unchanged: still flat within their collection,
+still slug plus hash, still holding a `project.yaml`.  Everything above
+the collection level is one path segment deeper than before.
+
+Why git and not a hub with rsync: one file per thread with immutable
+ids is the ideal git payload (adds never conflict; edits are rare), it
+is offline-first, the hub is a repository you already have credentials
+for on every machine, and history answers the purging question for
+free.  Project ids are remote-based, so the same project lands in the
+same directory on every machine; path-identified projects would not,
+which is one more reason the path warning exists.
+
+### Routing
+
+When a project is first created, `config.yaml` decides its collection
+by glob rules on the project id, first match wins, default `local`:
+
+    collections:
+      work:     { remote: git@gitbox.fastmail.com:rjbs/threads-work.git }
+      personal: { remote: git@github.com:rjbs/threads-personal.git }
+    routes:
+      - { match: "github.com/fastmail/*",   collection: work }
+      - { match: "gitbox.fastmail.com/*",   collection: work }
+      - { match: "github.com/rjbs/*",       collection: personal }
+
+The first `lt add` in a project reports where it landed, so a wrong
+guess is visible at once.  `lt move-project COLLECTION` relocates a
+project, the same file move `rehome` does.  A `collection:` field in
+`project.yaml` to pin a project against the rules is possible but not
+built until a case appears.
+
+### Syncing
+
+`lt sync` runs, for each collection with a remote: commit everything,
+pull with rebase, push.  A VM disposed of without a manual sync is the
+failure mode that matters, so writes push: `lt add`, `done`, `abandon`,
+`reopen`, and the MCP equivalents commit and push in the background
+when the collection has a remote.  The laptop pulls at SessionStart and
+from the browser's poll loop.  `lt sync add NAME URL` clones a
+collection into place and records it in `config.yaml`, for VM
+provisioning.
+
+Conflicts: adds never conflict.  The realistic conflict is the same
+thread's state changed, or a note appended, on two machines.  First
+version: `lt sync` reports the conflict and leaves git's markers.
+Second version, only once it has actually happened: merge thread files
+semantically (closed beats open; keep both notes).
+
+Same-day id collisions across machines are possible with a four
+character suffix (about one in a million per pair of threads); widen to
+six characters before enabling sync.  Ids are typed by suffix anyway.
+
+Migration from the current layout: move existing project directories
+under `local/`.
+
 ## Open questions
 
 * **Same-second ordering.**  `created` has one-second precision, so a
