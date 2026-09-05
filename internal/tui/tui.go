@@ -783,7 +783,7 @@ func (m *Model) viewPickerPreview(width int) string {
 		if !t.IsOpen() {
 			continue
 		}
-		line := th.Normal.Render(t.Title()) + th.Meta.Render("  "+t.ID[len(t.ID)-4:])
+		line := th.Normal.Render(t.Title()) + th.Meta.Render("  "+thread.Suffix(t.ID))
 		b.WriteString(truncate(line, width) + "\n")
 	}
 	pad := 1
@@ -975,7 +975,7 @@ func (d threadDelegate) Render(w io.Writer, l list.Model, index int, item list.I
 	}
 
 	title := t.Title()
-	meta := "  " + t.ID[len(t.ID)-4:]
+	meta := "  " + thread.Suffix(t.ID)
 	var line string
 	switch {
 	case !t.IsOpen():

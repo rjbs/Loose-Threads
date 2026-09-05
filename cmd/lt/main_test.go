@@ -99,7 +99,7 @@ func (w *world) checkIn(stdin string, env []string, name string, wantCode int, w
 	return out
 }
 
-const idPat = `2\d\d\d-\d\d-\d\d-[a-z2-9]{4}`
+const idPat = `2\d\d\d-\d\d-\d\d-[a-z2-9]{6}`
 
 func TestCLI(t *testing.T) {
 	w := newWorld(t)

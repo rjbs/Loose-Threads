@@ -184,17 +184,31 @@ func (t *Thread) Resolve(s State, note string, now time.Time) error {
 // IsOpen reports whether the thread is still open.
 func (t *Thread) IsOpen() bool { return t.State == Open }
 
-// Base32 alphabet without the characters most easily confused in print.
+// Alphabet for id suffixes: lowercase letters and digits without the
+// characters most easily confused in print.
 const idAlphabet = "abcdefghjkmnpqrstuvwxyz23456789"
 
-// NewID returns a fresh thread id: the date followed by four random
+// idSuffixLen is the number of random characters in an id.  Six keeps
+// same-day collisions between machines that later sync negligible (about
+// one in a billion per pair); four made them merely unlikely.
+const idSuffixLen = 6
+
+// Suffix returns the random part of an id, which is what people type.
+func Suffix(id string) string {
+	if i := strings.LastIndex(id, "-"); i >= 0 {
+		return id[i+1:]
+	}
+	return id
+}
+
+// NewID returns a fresh thread id: the date followed by random
 // characters.  Ids sort by creation day; the random part need only be
 // unique within one project directory.
 func NewID(now time.Time) string {
 	var sb strings.Builder
 	sb.WriteString(now.Format("2006-01-02"))
 	sb.WriteByte('-')
-	for range 4 {
+	for range idSuffixLen {
 		sb.WriteByte(idAlphabet[rand.IntN(len(idAlphabet))])
 	}
 	return sb.String()

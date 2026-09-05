@@ -84,15 +84,17 @@ there for the case where forgetting is the failure mode.
 
 ### Thread ids
 
-The filename is the id: `YYYY-MM-DD-xxxx`, where `xxxx` is four random
-characters from a lowercase alphabet with the confusable ones removed.
+The filename is the id: `YYYY-MM-DD-xxxxxx`, six random characters
+from a lowercase alphabet with the confusable ones removed.  (Four,
+originally; widened so that machines minting ids independently and
+syncing later do not collide.)
 Ids carry only the date, so listings sort by the `created` timestamp
 and use the id as a tiebreaker.  `created` is recorded to the second,
 so threads added within one second (a batch of `lt add` calls from one
 shell command, say) still fall back to the random suffix; see *Open
 questions*.  Uniqueness only matters within one project directory, and
-a thread may be referred to by any unique suffix of its id, so the four
-random characters usually suffice.
+a thread may be referred to by any unique suffix of its id, so a few
+characters usually suffice.
 
 ### Concurrency
 
@@ -391,9 +393,8 @@ version: `lt sync` reports the conflict and leaves git's markers.
 Second version, only once it has actually happened: merge thread files
 semantically (closed beats open; keep both notes).
 
-Same-day id collisions across machines are possible with a four
-character suffix (about one in a million per pair of threads); widen to
-six characters before enabling sync.  Ids are typed by suffix anyway.
+Ids carry six random characters so that machines minting them
+independently and syncing later do not collide.
 
 Migration from the current layout: move existing project directories
 under `local/`.

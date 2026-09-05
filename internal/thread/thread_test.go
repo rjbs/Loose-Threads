@@ -176,7 +176,7 @@ func TestResolve(t *testing.T) {
 }
 
 func TestNewID(t *testing.T) {
-	re := regexp.MustCompile(`^2026-09-04-[abcdefghjkmnpqrstuvwxyz23456789]{4}$`)
+	re := regexp.MustCompile(`^2026-09-04-[abcdefghjkmnpqrstuvwxyz23456789]{6}$`)
 	seen := map[string]bool{}
 	for range 50 {
 		id := NewID(created)
