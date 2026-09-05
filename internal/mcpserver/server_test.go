@@ -24,7 +24,10 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	s := &store.Store{Root: filepath.Join(t.TempDir(), "store")}
+	s, err := store.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := New(s, defaultProject)
 
 	ctx := context.Background()
@@ -163,7 +166,10 @@ func TestTools(t *testing.T) {
 }
 
 func TestNoDefaultProject(t *testing.T) {
-	s := &store.Store{Root: t.TempDir()}
+	s, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := New(s, "")
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()

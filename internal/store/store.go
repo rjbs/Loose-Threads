@@ -1,6 +1,6 @@
 // Package store manages the on-disk layout of Loose Threads: a root
-// directory holding one flat directory per project, each with a
-// project.yaml and one Markdown file per thread.
+// directory holding collections, each holding one flat directory per
+// project, each with a project.yaml and one Markdown file per thread.
 package store
 
 import (
@@ -32,14 +32,16 @@ var ErrNotFound = errors.New("store: not found")
 
 // Store is a handle on one store root.  The root need not exist yet.
 type Store struct {
-	Root string
+	Root   string
+	config *Config
 }
 
 // Project is a project directory within the store.
 type Project struct {
-	ID   string `yaml:"id"`
-	Name string `yaml:"name,omitempty"`
-	Dir  string `yaml:"-"` // absolute path of the project directory
+	ID         string `yaml:"id"`
+	Name       string `yaml:"name,omitempty"`
+	Dir        string `yaml:"-"` // absolute path of the project directory
+	Collection string `yaml:"-"` // name of the collection holding it
 }
 
 // Mismatched reports whether the project's directory name disagrees with
@@ -75,6 +77,8 @@ func DefaultRoot() (string, error) {
 }
 
 // Open returns a Store for root, or for DefaultRoot when root is empty.
+// It loads config.yaml and moves any project directories left over from
+// the pre-collection layout into the local collection.
 func Open(root string) (*Store, error) {
 	if root == "" {
 		var err error
@@ -82,7 +86,14 @@ func Open(root string) (*Store, error) {
 			return nil, err
 		}
 	}
-	return &Store{Root: root}, nil
+	s := &Store{Root: root}
+	if err := s.loadConfig(); err != nil {
+		return nil, err
+	}
+	if err := s.migrateFlat(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 var slugJunk = regexp.MustCompile(`[^a-z0-9.]+`)
@@ -101,24 +112,31 @@ func DirName(id string) string {
 }
 
 // ProjectDir returns the directory a project with the given id has, or
-// would have, in the store.
-func (s *Store) ProjectDir(id string) string {
-	return filepath.Join(s.Root, DirName(id))
+// would have, within the named collection.
+func (s *Store) ProjectDir(collection, id string) string {
+	return filepath.Join(s.CollectionDir(collection), DirName(id))
+}
+
+// RoutedDir returns the directory a new project with the given id would
+// be created in.
+func (s *Store) RoutedDir(id string) string {
+	return s.ProjectDir(s.config.Route(id), id)
 }
 
 // Project returns the project with the given id, creating its directory
-// and project.yaml if they do not exist.
+// and project.yaml in the routed collection if it exists nowhere.
 func (s *Store) Project(id string) (*Project, error) {
-	dir := s.ProjectDir(id)
-	p, err := readProject(dir)
+	p, err := s.LookupProject(id)
 	if err == nil {
 		return p, nil
 	}
-	if !errors.Is(err, os.ErrNotExist) {
+	if !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 
-	p = &Project{ID: id, Dir: dir}
+	collection := s.config.Route(id)
+	dir := s.ProjectDir(collection, id)
+	p = &Project{ID: id, Dir: dir, Collection: collection}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -128,13 +146,47 @@ func (s *Store) Project(id string) (*Project, error) {
 	return p, nil
 }
 
-// LookupProject returns the project with the given id, or ErrNotFound.
+// LookupProject returns the project with the given id from whichever
+// collection holds it, or ErrNotFound.
 func (s *Store) LookupProject(id string) (*Project, error) {
-	p, err := readProject(s.ProjectDir(id))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("%w: project %q", ErrNotFound, id)
+	names, err := s.Collections()
+	if err != nil {
+		return nil, err
 	}
-	return p, err
+	for _, c := range names {
+		p, err := readProject(s.ProjectDir(c, id))
+		if err == nil {
+			p.Collection = c
+			return p, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("%w: project %q", ErrNotFound, id)
+}
+
+// MoveProject relocates a project into another collection.
+func (s *Store) MoveProject(id, collection string) (*Project, error) {
+	p, err := s.LookupProject(id)
+	if err != nil {
+		return nil, err
+	}
+	if p.Collection == collection {
+		return p, nil
+	}
+	dest := s.ProjectDir(collection, id)
+	if _, err := os.Lstat(dest); err == nil {
+		return nil, fmt.Errorf("store: %s already exists", dest)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(p.Dir, dest); err != nil {
+		return nil, err
+	}
+	p.Dir, p.Collection = dest, collection
+	return p, nil
 }
 
 // SaveProject writes project.yaml.
@@ -162,30 +214,36 @@ func readProject(dir string) (*Project, error) {
 	return &p, nil
 }
 
-// Projects lists every project in the store, sorted by display name.
-// Directories without a project.yaml are ignored.
+// Projects lists every project in every collection, sorted by display
+// name.  Directories without a project.yaml are ignored.
 func (s *Store) Projects() ([]*Project, error) {
-	entries, err := os.ReadDir(s.Root)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
+	names, err := s.Collections()
 	if err != nil {
 		return nil, err
 	}
-
 	var ps []*Project
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		p, err := readProject(filepath.Join(s.Root, e.Name()))
+	for _, c := range names {
+		entries, err := os.ReadDir(s.CollectionDir(c))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		ps = append(ps, p)
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			p, err := readProject(filepath.Join(s.CollectionDir(c), e.Name()))
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			p.Collection = c
+			ps = append(ps, p)
+		}
 	}
 	sort.Slice(ps, func(i, j int) bool {
 		return ps[i].DisplayName() < ps[j].DisplayName()

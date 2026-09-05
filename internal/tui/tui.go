@@ -113,7 +113,7 @@ func (m *Model) loadProjects(keep string) error {
 		// Match by directory rather than id: a directory whose project.yaml
 		// carries the wrong id is still the directory lookups for keep
 		// would use, and must not be listed twice.
-		dir := m.store.ProjectDir(keep)
+		dir := m.store.RoutedDir(keep)
 		found := false
 		for i, p := range ps {
 			if p.Dir == dir {
@@ -225,6 +225,11 @@ func tick() tea.Cmd {
 func (m *Model) currentFingerprint() string {
 	var b strings.Builder
 	dirs := []string{m.store.Root}
+	if names, err := m.store.Collections(); err == nil {
+		for _, c := range names {
+			dirs = append(dirs, m.store.CollectionDir(c))
+		}
+	}
 	if p := m.project(); p != nil {
 		dirs = append(dirs, p.Dir)
 	}
@@ -1030,6 +1035,9 @@ func (d projectDelegate) Render(w io.Writer, l list.Model, index int, item list.
 	}
 	if it.p.Name != "" {
 		line += th.Meta.Render("  " + it.p.ID)
+	}
+	if it.p.Collection != "" && it.p.Collection != store.LocalCollection {
+		line += th.Meta.Render("  [" + it.p.Collection + "]")
 	}
 	line = cursor + line
 	line = truncate(line, l.Width())

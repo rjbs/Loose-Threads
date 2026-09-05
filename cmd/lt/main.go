@@ -183,6 +183,20 @@ func openWorkspace(projectID string, create bool) (*workspace, error) {
 	return &workspace{store: s, project: p}, nil
 }
 
+// openWorkspaceCreating is openWorkspace with create set, also reporting
+// whether the project directory was created by this call.
+func openWorkspaceCreating(projectID string) (*workspace, bool, error) {
+	probe, err := openWorkspace(projectID, false)
+	if err == nil {
+		return probe, false, nil
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return nil, false, err
+	}
+	c, err := openWorkspace(projectID, true)
+	return c, err == nil, err
+}
+
 func (c *workspace) resolveThread(ref string) (*thread.Thread, error) {
 	return c.store.Resolve(c.project, ref)
 }

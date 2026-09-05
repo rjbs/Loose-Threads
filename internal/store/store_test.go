@@ -42,7 +42,11 @@ func TestDirName(t *testing.T) {
 
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	return &Store{Root: filepath.Join(t.TempDir(), "store")}
+	s, err := Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
 }
 
 // addThread creates a thread in project id with the given body and returns
@@ -275,6 +279,108 @@ func TestRehome(t *testing.T) {
 	moved, err = s.Rehome("/empty/path", "github.com/rjbs/new")
 	if err != nil || moved != nil {
 		t.Errorf("empty source: moved %v, err %v", moved, err)
+	}
+}
+
+func checkRoute(t *testing.T, c *Config, id, want string) {
+	t.Helper()
+	if got := c.Route(id); got != want {
+		t.Errorf("Route(%q) = %q, want %q", id, got, want)
+	}
+}
+
+func TestRouting(t *testing.T) {
+	c := &Config{Routes: []Route{
+		{"github.com/fastmail/*", "work"},
+		{"gitbox.fastmail.com/*", "work"},
+		{"github.com/rjbs/*", "personal"},
+		{"*/secret?", "hidden"},
+	}}
+	checkRoute(t, c, "github.com/fastmail/cyrus", "work")
+	checkRoute(t, c, "gitbox.fastmail.com/a/b/c", "work")
+	checkRoute(t, c, "github.com/rjbs/Dist-Zilla", "personal")
+	checkRoute(t, c, "github.com/rjbs", LocalCollection) // no trailing segment
+	checkRoute(t, c, "example.com/x/secret1", "hidden")
+	checkRoute(t, c, "example.com/other", LocalCollection)
+	checkRoute(t, &Config{}, "anything", LocalCollection)
+}
+
+func TestCollections(t *testing.T) {
+	s := newStore(t)
+	s.Config().Routes = []Route{{"github.com/work/*", "work"}}
+	s.Config().Collections = map[string]CollectionConfig{"work": {Remote: "git@example.com:threads.git"}}
+	if err := s.SaveConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	work := addThread(t, s, "github.com/work/thing", "w")
+	home := addThread(t, s, "github.com/home/thing", "h")
+	_ = work
+	_ = home
+
+	wp, _ := s.LookupProject("github.com/work/thing")
+	hp, _ := s.LookupProject("github.com/home/thing")
+	if wp.Collection != "work" || filepath.Base(filepath.Dir(wp.Dir)) != "work" {
+		t.Errorf("work project in %q at %s", wp.Collection, wp.Dir)
+	}
+	if hp.Collection != LocalCollection {
+		t.Errorf("unrouted project in %q", hp.Collection)
+	}
+	checkProjects(t, s, "github.com/home/thing", "github.com/work/thing")
+
+	names, _ := s.Collections()
+	if strings.Join(names, ",") != "local,work" {
+		t.Errorf("collections %v", names)
+	}
+	if s.Config().Remote("work") == "" || s.Config().Remote(LocalCollection) != "" {
+		t.Error("remotes wrong")
+	}
+
+	// Reopening reads the config back.
+	again, err := Open(s.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again.Config().Routes) != 1 {
+		t.Errorf("config not persisted: %+v", again.Config())
+	}
+
+	moved, err := s.MoveProject("github.com/home/thing", "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Collection != "work" {
+		t.Errorf("moved to %q", moved.Collection)
+	}
+	checkTitles(t, s, "github.com/home/thing", 0, "h")
+	if _, err := s.MoveProject("github.com/home/thing", "work"); err != nil {
+		t.Errorf("moving to where it already is should be a no-op: %v", err)
+	}
+}
+
+func TestMigrateFlatLayout(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "store")
+	old := filepath.Join(root, DirName("github.com/rjbs/old"))
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(old, "project.yaml"), []byte("id: github.com/rjbs/old\n"), 0o644)
+	os.WriteFile(filepath.Join(old, "2026-01-01-abcdef.md"), []byte("---\nstate: open\n---\nOld\n"), 0o644)
+
+	s, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.LookupProject("github.com/rjbs/old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Collection != LocalCollection {
+		t.Errorf("migrated into %q", p.Collection)
+	}
+	checkTitles(t, s, "github.com/rjbs/old", 0, "Old")
+	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
+		t.Error("old directory still present")
 	}
 }
 

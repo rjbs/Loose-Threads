@@ -28,7 +28,10 @@ type fixture struct {
 // id start, and sizes the model so the detail pane is visible.
 func newModel(t *testing.T, start string, fixtures ...fixture) (*Model, *store.Store) {
 	t.Helper()
-	s := &store.Store{Root: filepath.Join(t.TempDir(), "store")}
+	s, err := store.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	tick := now
 	for _, f := range fixtures {
 		p, err := s.Project(f.project)

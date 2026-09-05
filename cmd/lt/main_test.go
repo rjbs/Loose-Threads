@@ -109,8 +109,11 @@ func TestCLI(t *testing.T) {
 	w.check("unknown command", 2, `unknown command`, "frobnicate")
 	w.check("list before any threads", 0, `^$`, "list")
 
-	a := strings.TrimSpace(w.check("add with body flag", 0, `^`+idPat+`\n$`,
-		"add", "First: with colon", "-body", "Some context."))
+	out, errOut, code := w.run("", nil, "add", "First: with colon", "-body", "Some context.")
+	if code != 0 || !strings.Contains(errOut, "new project github.com/rjbs/testrepo in collection local") {
+		t.Errorf("first add should report the collection: exit %d, stderr %q", code, errOut)
+	}
+	a := strings.TrimSpace(out)
 	b := strings.TrimSpace(w.checkIn("stdin body", []string{"CLAUDE_CODE_SESSION_ID=sess-1"},
 		"add with stdin", 0, `^`+idPat+`\n$`, "add", "Second"))
 	w.check("add without title", 1, `TITLE`, "add")
@@ -177,6 +180,15 @@ func TestEditPositionsCursor(t *testing.T) {
 	if strings.TrimSpace(string(got)) != "6" {
 		t.Errorf("cursor on line %s, want 6", got)
 	}
+}
+
+func TestMoveProject(t *testing.T) {
+	w := newWorld(t)
+	w.check("add", 0, idPat, "add", "Thing")
+	w.check("move", 0, `^github\.com/rjbs/testrepo: local -> work\n$`, "move-project", "work")
+	w.check("still listed", 0, `Thing`, "list")
+	w.check("move again is a no-op", 0, `already in work`, "move-project", "work")
+	w.check("missing project", 1, `not found`, "move-project", "-project", "nope/nope", "work")
 }
 
 func TestRehome(t *testing.T) {

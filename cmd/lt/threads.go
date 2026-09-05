@@ -60,9 +60,12 @@ func runAdd(args []string) error {
 	}
 	text = strings.TrimSpace(text)
 
-	c, err := openWorkspace(*projectID, true)
+	c, isNew, err := openWorkspaceCreating(*projectID)
 	if err != nil {
 		return err
+	}
+	if isNew {
+		fmt.Fprintf(os.Stderr, "new project %s in collection %s\n", c.project.ID, c.project.Collection)
 	}
 	if project.IsPath(c.project.ID) {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", project.PathWarning)
