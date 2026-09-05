@@ -19,16 +19,38 @@ const LocalCollection = "local"
 const configFile = "config.yaml"
 
 // Config is the store's config.yaml: the collections that may be synced,
-// and the rules that route a new project into one.
+// the rules that route a new project into one, and the identity sync
+// commits are made with.
 type Config struct {
+	Author      *Author                     `yaml:"author,omitempty"`
 	Collections map[string]CollectionConfig `yaml:"collections,omitempty"`
 	Routes      []Route                     `yaml:"routes,omitempty"`
 }
 
 // CollectionConfig describes one collection.  A collection with no
-// remote is never synced.
+// remote is never synced.  Author, if set, overrides the store's.
 type CollectionConfig struct {
-	Remote string `yaml:"remote,omitempty"`
+	Remote string  `yaml:"remote,omitempty"`
+	Author *Author `yaml:"author,omitempty"`
+}
+
+// Author is a git identity for sync commits.
+type Author struct {
+	Name  string `yaml:"name"`
+	Email string `yaml:"email"`
+}
+
+// AuthorFor returns the identity sync commits in the named collection
+// should carry: the collection's, else the store's, else nil (meaning
+// let git decide).
+func (c *Config) AuthorFor(collection string) *Author {
+	if c == nil {
+		return nil
+	}
+	if cc, ok := c.Collections[collection]; ok && cc.Author != nil {
+		return cc.Author
+	}
+	return c.Author
 }
 
 // Route sends projects whose id matches a glob to a collection.  "*"

@@ -93,6 +93,7 @@ func Collection(ctx context.Context, s *store.Store, name string) (Result, error
 		return r, err
 	}
 	g := git{ctx: ctx, dir: dir}
+	g.identity = identityFlags(g, s.Config().AuthorFor(name))
 	r.Merged = cloned && g.hasCommits() // a fresh clone of a non-empty remote is the first merge
 
 	unlock, err := lock(dir)
@@ -268,15 +269,32 @@ func hostname() string {
 	return h
 }
 
-// git runs git commands in one repository.  Commits are made with a fixed
-// identity so a fresh VM without git config still works.
+// git runs git commands in one repository.
 type git struct {
-	ctx context.Context
-	dir string
+	ctx      context.Context
+	dir      string
+	identity []string // -c flags fixing the commit identity, if any
+}
+
+// identityFlags chooses who sync commits are by.  A configured Author
+// wins.  Otherwise git's own configuration is left alone if it has an
+// identity, and a fixed one is supplied only when it has none, so a
+// fresh VM without git config still works.
+func identityFlags(g git, a *store.Author) []string {
+	if a == nil {
+		if _, err := g.run("config", "user.email"); err == nil {
+			if _, err := g.run("config", "user.name"); err == nil {
+				return nil
+			}
+		}
+		a = &store.Author{Name: "Loose Threads", Email: "lt@" + hostname()}
+	}
+	return []string{"-c", "user.name=" + a.Name, "-c", "user.email=" + a.Email}
 }
 
 func (g git) run(args ...string) (string, error) {
-	full := append([]string{"-C", g.dir, "-c", "user.name=Loose Threads", "-c", "user.email=lt@" + hostname(), "-c", "commit.gpgsign=false"}, args...)
+	full := append([]string{"-C", g.dir, "-c", "commit.gpgsign=false"}, g.identity...)
+	full = append(full, args...)
 	cmd := exec.CommandContext(g.ctx, "git", full...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

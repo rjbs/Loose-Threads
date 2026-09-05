@@ -58,6 +58,16 @@ not.  Projects are routed into collections by rules in
       - { match: "github.com/fastmail/*", collection: work }
       - { match: "github.com/rjbs/*",     collection: personal }
 
+Sync commits are made as the collection's `author`, else the store's
+top-level `author`, else whatever git itself is configured with, else
+"Loose Threads <lt@hostname>" so a bare VM still works:
+
+    author: { name: Ricardo Signes, email: rjbs@example.com }
+    collections:
+      work:
+        remote: git@gitbox.example.com:rjbs/threads-work.git
+        author: { name: Ricardo Signes, email: rjbs@work.example }
+
 Anything unrouted lands in `local`, which is never synced.  Different
 collections can point at repositories owned by different parties, so
 the work admin never sees personal threads.

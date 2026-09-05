@@ -260,3 +260,62 @@ func TestUnreachableRemote(t *testing.T) {
 		t.Error("expected an error for an unreachable remote")
 	}
 }
+
+func authorOfLastCommit(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%an <%ae>").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log: %v\n%s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestCommitIdentity(t *testing.T) {
+	w := newWorld(t)
+
+	// Nothing configured anywhere: the fallback identity.  The test git
+	// may have a global identity; pin the repo's own to nothing by
+	// pointing HOME and XDG at empty directories for this run.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	w.add(w.laptop, "one")
+	w.sync(w.laptop, "fallback", "pushed")
+	if got := authorOfLastCommit(t, w.laptop.CollectionDir("work")); !strings.HasPrefix(got, "Loose Threads <lt@") {
+		t.Errorf("fallback author %q", got)
+	}
+
+	// Store-wide author.
+	w.laptop.Config().Author = &store.Author{Name: "R. Signes", Email: "rjbs@example.com"}
+	w.laptop.SaveConfig()
+	w.add(w.laptop, "two")
+	w.sync(w.laptop, "store author", "pushed")
+	if got := authorOfLastCommit(t, w.laptop.CollectionDir("work")); got != "R. Signes <rjbs@example.com>" {
+		t.Errorf("store author %q", got)
+	}
+
+	// Per-collection author wins.
+	cc := w.laptop.Config().Collections["work"]
+	cc.Author = &store.Author{Name: "Work Me", Email: "me@work.example"}
+	w.laptop.Config().Collections["work"] = cc
+	w.laptop.SaveConfig()
+	w.add(w.laptop, "three")
+	w.sync(w.laptop, "collection author", "pushed")
+	if got := authorOfLastCommit(t, w.laptop.CollectionDir("work")); got != "Work Me <me@work.example>" {
+		t.Errorf("collection author %q", got)
+	}
+
+	// No configured author but git has one of its own: git's is used.
+	w.laptop.Config().Author = nil
+	cc.Author = nil
+	w.laptop.Config().Collections["work"] = cc
+	w.laptop.SaveConfig()
+	dir := w.laptop.CollectionDir("work")
+	exec.Command("git", "-C", dir, "config", "user.name", "Repo Config").Run()
+	exec.Command("git", "-C", dir, "config", "user.email", "repo@example.com").Run()
+	w.add(w.laptop, "four")
+	w.sync(w.laptop, "git's own identity", "pushed")
+	if got := authorOfLastCommit(t, dir); got != "Repo Config <repo@example.com>" {
+		t.Errorf("git identity %q", got)
+	}
+}
