@@ -36,10 +36,33 @@ $(DIST_BIN): $(SOURCES) | $(BUILDDIR)
 $(BUILDDIR):
 	mkdir -p $@
 
+# The WebDAV collection to upload into, e.g. https://dav.example.com/bin/ --
+# note the trailing slash.  Set it in the environment or on the command line;
+# it is not checked in.
+PUBLISH_URL ?=
+
+CURL ?= curl
+
+# Credentials come from ~/.netrc unless PUBLISH_USER and PUBLISH_PASS are set.
+# Either way they reach curl through a config file on stdin rather than through
+# argv, so the password never shows up in ps output. -- claude, 2026-09-06
 .PHONY: publish
 publish: dist
-	@echo "publish: not yet implemented; $(DIST_BIN) is built and waiting" >&2
+ifeq ($(strip $(PUBLISH_URL)),)
+	@echo 'publish: set PUBLISH_URL to the WebDAV collection to upload into' >&2
 	@false
+else
+	@printf '%s\n' \
+	  'url = "$(PUBLISH_URL)$(notdir $(DIST_BIN))"' \
+	  'upload-file = "$(DIST_BIN)"' \
+	  $(if $(strip $(PUBLISH_USER)),'user = "$(PUBLISH_USER):$(PUBLISH_PASS)"',) \
+	  'netrc-optional =' \
+	  'fail-with-body =' \
+	  'silent =' \
+	  'show-error =' \
+	  | $(CURL) -K -
+	@echo 'published $(notdir $(DIST_BIN)) to $(PUBLISH_URL)'
+endif
 
 .PHONY: test
 test:
