@@ -12,12 +12,19 @@ SOURCES := go.mod go.sum $(shell find cmd internal -name '*.go')
 # -s -w drop the symbol table and DWARF data, which takes ~11MB down to ~7MB;
 # nobody is going to run a debugger against the copy on the VMs.
 GOFLAGS_DIST = -trimpath -ldflags '-s -w'
+GOFLAGS_INSTALL = -trimpath
 
 .PHONY: all
 all: $(BIN)
 
 $(BIN): $(SOURCES)
 	$(GO) build -o $@ ./cmd/$(BIN)
+
+.PHONY: install
+install:
+	$(GO) install $(GOFLAGS_INSTALL) ./cmd/$(BIN)
+	@d="$$($(GO) env GOBIN)"; test -n "$$d" || d="$$($(GO) env GOPATH)/bin"; \
+	  echo "installed $(BIN) to $$d/$(BIN)"
 
 .PHONY: dist
 dist: $(DIST_BIN)
