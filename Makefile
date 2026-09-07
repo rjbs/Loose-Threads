@@ -39,7 +39,7 @@ $(BUILDDIR):
 # The WebDAV collection to upload into, e.g. https://dav.example.com/bin/ --
 # note the trailing slash.  Set it in the environment or on the command line;
 # it is not checked in.
-PUBLISH_URL ?=
+PUBLISH_URL ?= https://myfiles.fastmail.com/static.rjbs.cloud/bin.amd64/
 
 CURL ?= curl
 

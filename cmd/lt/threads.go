@@ -292,7 +292,14 @@ func runEdit(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := editFile(c.store.ThreadPath(c.project, t.ID)); err != nil {
+	path := c.store.ThreadPath(c.project, t.ID)
+	if !stdinIsTerminal() || !stdoutIsTerminal() {
+		// An editor started without a terminal does not fail; vim, for
+		// one, waits forever on its non-terminal stdin, and so would we.
+		// -- claude, 2026-09-08
+		return fmt.Errorf("edit needs a terminal; to add to the thread without one, use lt append, or edit the file directly:\n  %s", path)
+	}
+	if err := editFile(path); err != nil {
 		return err
 	}
 	pushInBackground(c.store, c.project)

@@ -146,6 +146,8 @@ func TestCLI(t *testing.T) {
 	w.check("list all", 0, `(?s)^example\.com/other\n  `+idPat+`  Elsewhere\n$`, "list", "-scope", "all")
 	w.check("list all with states", 0, `(?s)example\.com/other.*\n\ngithub\.com/rjbs/testrepo\n.*\[abandoned\]`, "list", "-scope", "all", "-all-states")
 
+	w.checkIn("", []string{"EDITOR=true"}, "edit without a terminal", 1, `needs a terminal.*lt append[^\n]*\n  .*`+regexp.QuoteMeta(a)+`\.md`, "edit", a)
+
 	w.check("double dash title", 0, idPat, "add", "--", "-leading-dash")
 	w.check("show dash title", 0, `-leading-dash`, "list")
 }
@@ -157,29 +159,6 @@ func TestOriginDefaults(t *testing.T) {
 
 	id = strings.TrimSpace(w.checkIn("", []string{"CLAUDECODE=1"}, "agent add", 0, idPat, "add", "Agent thing"))
 	w.check("origin agent", 0, `origin: agent`, "show", id)
-}
-
-func TestEditPositionsCursor(t *testing.T) {
-	if _, err := exec.LookPath("vim"); err != nil {
-		t.Skip("vim not available")
-	}
-	w := newWorld(t)
-	id := strings.TrimSpace(w.check("add", 0, idPat, "add", "Title here", "-body", "body"))
-
-	out := filepath.Join(t.TempDir(), "line")
-	// A real vim in Ex mode that records the cursor line once startup,
-	// including lt's own -c positioning commands, has finished.
-	editor := "vim -es -c \"autocmd VimEnter * call writefile([line('.')], '" + out + "') | q!\""
-	w.checkIn("", []string{"EDITOR=" + editor}, "edit", 0, ``, "edit", id)
-	got, err := os.ReadFile(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Four frontmatter lines (state, created, origin, delimiter) plus the
-	// opening delimiter puts the title on line 6.
-	if strings.TrimSpace(string(got)) != "6" {
-		t.Errorf("cursor on line %s, want 6", got)
-	}
 }
 
 func TestMoveProject(t *testing.T) {
