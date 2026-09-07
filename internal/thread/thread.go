@@ -158,11 +158,11 @@ func (t *Thread) SetState(s State, now time.Time) error {
 var noteWord = map[State]string{Open: "Reopened", Done: "Done", Abandoned: "Abandoned"}
 
 // Resolve changes the state as SetState does and, if note is non-empty,
-// appends it to the body as a final paragraph labelled with the state and
-// date, e.g. "Done 2026-09-04: registered it after all."  The note lives
-// in the body rather than the frontmatter so it needs no YAML quoting
-// and reads naturally in the editor.
-func (t *Thread) Resolve(s State, note string, now time.Time) error {
+// appends it to the body as Append would, with the new state as its first
+// word: "Done: registered it after all."  The note lives in the body
+// rather than the frontmatter so it needs no YAML quoting and reads
+// naturally in the editor.
+func (t *Thread) Resolve(s State, note string, by Origin, now time.Time) error {
 	if err := t.SetState(s, now); err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (t *Thread) Resolve(s State, note string, now time.Time) error {
 	if note == "" {
 		return nil
 	}
-	t.appendParagraph(fmt.Sprintf("%s %s: %s", noteWord[s], now.Format("2006-01-02"), note))
+	t.Append(noteWord[s]+": "+note, by, now)
 	return nil
 }
 

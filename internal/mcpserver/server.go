@@ -269,7 +269,7 @@ func (s *server) setThreadState(ctx context.Context, req *mcp.CallToolRequest, i
 	if err != nil {
 		return nil, store.View{}, err
 	}
-	if err := t.Resolve(thread.State(in.State), in.Note, s.now().Truncate(time.Second)); err != nil {
+	if err := t.Resolve(thread.State(in.State), in.Note, thread.OriginAgent, s.now().Truncate(time.Second)); err != nil {
 		return nil, store.View{}, err
 	}
 	if err := s.store.Save(p, t); err != nil {

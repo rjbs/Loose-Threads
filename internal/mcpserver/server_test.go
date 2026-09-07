@@ -156,7 +156,7 @@ func TestTools(t *testing.T) {
 	}
 	h.call("set_thread_state", map[string]any{"id": b.ID, "state": "pending"}, "state must be", nil)
 	h.call("set_thread_state", map[string]any{"id": b.ID, "state": "abandoned", "note": "superseded"}, "", &v)
-	if !strings.HasSuffix(v.Body, "Abandoned "+time.Now().Format("2006-01-02")+": superseded\n") {
+	if !strings.HasSuffix(v.Body, "(agent):**\nAbandoned: superseded\n") {
 		t.Errorf("note not appended: %q", v.Body)
 	}
 

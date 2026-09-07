@@ -96,7 +96,7 @@ file is fixed, and the next sync commits the resolution.
     lt list -all-states         # include done and abandoned
     lt show 7k2m                # by id or unique suffix
     lt done 7k2m
-    lt done 7k2m -note "fixed in abc123"      # note is appended to the thread
+    lt done 7k2m -note "fixed in abc123"      # note is appended, dated and attributed
     lt abandon 7k2m -note "superseded by the rewrite"
     lt reopen 7k2m
     lt append 7k2m "also affects sync"        # adds a dated, attributed paragraph

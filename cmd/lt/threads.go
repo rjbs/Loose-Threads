@@ -242,6 +242,7 @@ func stateCommand(target thread.State) func([]string) error {
 		fs := newFlagSet(name, "THREAD...")
 		projectID := fs.String("project", "", "project id (default: derived from the working directory)")
 		note := fs.String("note", "", "one-line note appended to the thread, saying why")
+		origin := fs.String("origin", string(defaultOrigin()), "who is writing the note: agent or human")
 		pos, err := parse(fs, args)
 		if err != nil {
 			return err
@@ -260,7 +261,7 @@ func stateCommand(target thread.State) func([]string) error {
 			if err != nil {
 				return err
 			}
-			if err := t.Resolve(target, *note, now()); err != nil {
+			if err := t.Resolve(target, *note, thread.Origin(*origin), now()); err != nil {
 				return err
 			}
 			if err := c.store.Save(c.project, t); err != nil {

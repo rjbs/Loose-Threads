@@ -141,10 +141,10 @@ func TestSetState(t *testing.T) {
 	}
 }
 
-func checkResolve(t *testing.T, name, body string, to State, note, wantBody string) {
+func checkResolve(t *testing.T, name, body string, to State, note string, by Origin, wantBody string) {
 	t.Helper()
 	th := Thread{State: Open, Body: body}
-	if err := th.Resolve(to, note, closed); err != nil {
+	if err := th.Resolve(to, note, by, closed); err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
 	if th.State != to {
@@ -156,21 +156,21 @@ func checkResolve(t *testing.T, name, body string, to State, note, wantBody stri
 }
 
 func TestResolve(t *testing.T) {
-	checkResolve(t, "done with note", "Title\n\nBody.\n", Done, "shipped it",
-		"Title\n\nBody.\n\nDone 2026-09-05: shipped it\n")
-	checkResolve(t, "abandoned with note", "Title\n", Abandoned, "  not worth it  ",
-		"Title\n\nAbandoned 2026-09-05: not worth it\n")
-	checkResolve(t, "reopen with note", "Title\n", Open, "it came back",
-		"Title\n\nReopened 2026-09-05: it came back\n")
-	checkResolve(t, "empty note leaves body alone", "Title\n\nBody.\n", Done, "   ",
+	checkResolve(t, "done with note", "Title\n\nBody.\n", Done, "shipped it", OriginAgent,
+		"Title\n\nBody.\n\n**2026-09-05 09:00 (agent):**\nDone: shipped it\n")
+	checkResolve(t, "abandoned with note", "Title\n", Abandoned, "  not worth it  ", OriginHuman,
+		"Title\n\n**2026-09-05 09:00 (human):**\nAbandoned: not worth it\n")
+	checkResolve(t, "reopen with note", "Title\n", Open, "it came back", OriginHuman,
+		"Title\n\n**2026-09-05 09:00 (human):**\nReopened: it came back\n")
+	checkResolve(t, "empty note leaves body alone", "Title\n\nBody.\n", Done, "   ", OriginAgent,
 		"Title\n\nBody.\n")
-	checkResolve(t, "body without trailing newline", "Title", Done, "ok",
-		"Title\n\nDone 2026-09-05: ok\n")
-	checkResolve(t, "empty body", "", Done, "ok",
-		"Done 2026-09-05: ok\n")
+	checkResolve(t, "body without trailing newline", "Title", Done, "ok", OriginAgent,
+		"Title\n\n**2026-09-05 09:00 (agent):**\nDone: ok\n")
+	checkResolve(t, "empty body", "", Done, "ok", OriginAgent,
+		"**2026-09-05 09:00 (agent):**\nDone: ok\n")
 
 	var th Thread
-	if err := th.Resolve("bogus", "x", closed); !errors.Is(err, ErrInvalidState) {
+	if err := th.Resolve("bogus", "x", OriginHuman, closed); !errors.Is(err, ErrInvalidState) {
 		t.Errorf("bogus state: got %v, want ErrInvalidState", err)
 	}
 }

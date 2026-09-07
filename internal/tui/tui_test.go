@@ -178,7 +178,7 @@ func TestCloseWithNote(t *testing.T) {
 
 	p, _ := s.LookupProject(projA)
 	ths, _, _ := s.Threads(p)
-	if !strings.HasSuffix(ths[0].Body, "Done 2026-09-04: chose option B\n") {
+	if !strings.HasSuffix(ths[0].Body, "(human):**\nDone: chose option B\n") {
 		t.Errorf("note not appended: %q", ths[0].Body)
 	}
 

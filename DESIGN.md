@@ -69,16 +69,18 @@ A thread that was a question ("decide whether to register the MCP
 server") is the only record of its own answer, so closing it bare turns
 a record into a tombstone, and a later session that was tracking it
 learns nothing.  Every way of changing state therefore takes an optional
-one-line note, appended to the body as a final paragraph:
+one-line note, appended to the body as a final paragraph in the same
+form as `lt append` (below), with the new state as its first word:
 
-    Done 2026-09-04: registered it after all; the CLI alone was not used.
+    **2026-09-04 12:40 (agent):**
+    Done: registered it after all; the CLI alone was not used.
 
 The label is `Done`, `Abandoned`, or `Reopened`.  The note lives in the
 body rather than a frontmatter field so it needs no YAML quoting, reads
 naturally in the editor, and accumulates as history if a thread is
 reopened and closed again.  Nothing is structured about it beyond the
-label; if resolutions ever need querying, the paragraphs are easy to
-migrate.  In the browser, `d` and `x` close instantly and `D` and `X`
+header and label; if resolutions ever need querying, the paragraphs are
+easy to migrate.  In the browser, `d` and `x` close instantly and `D` and `X`
 prompt for the note, so the quick case stays quick and the prompt is
 there for the case where forgetting is the failure mode.
 

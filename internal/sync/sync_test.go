@@ -79,7 +79,7 @@ func (w *world) setState(s *store.Store, id string, state thread.State, note str
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	th.Resolve(state, note, w.clock)
+	th.Resolve(state, note, thread.OriginHuman, w.clock)
 	if err := s.Save(p, th); err != nil {
 		w.t.Fatal(err)
 	}

@@ -460,7 +460,7 @@ func (m *Model) toggleState(target thread.State, note string) tea.Cmd {
 	if t.State == target {
 		next = thread.Open
 	}
-	if err := t.Resolve(next, note, m.now()); err != nil {
+	if err := t.Resolve(next, note, thread.OriginHuman, m.now()); err != nil {
 		m.err = err
 		return nil
 	}

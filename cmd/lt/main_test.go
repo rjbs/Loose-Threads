@@ -136,9 +136,9 @@ func TestCLI(t *testing.T) {
 	w.check("list all-states", 0, `\[done\]  First`, "list", "-all-states")
 	w.check("reopen", 0, `: open  First`, "reopen", a)
 	w.check("done with note", 0, `: done  First`, "done", a, "-note", "shipped in abc123")
-	w.check("note appended", 0, `(?s)Some context\.\n\nDone \d{4}-\d\d-\d\d: shipped in abc123\n$`, "show", a)
+	w.check("note appended", 0, `(?s)Some context\.\n\n\*\*\d{4}-\d\d-\d\d \d\d:\d\d \(human\):\*\*\nDone: shipped in abc123\n$`, "show", a)
 	w.check("reopen with note", 0, `: open`, "reopen", a, "-note", "regressed")
-	w.check("second note appended", 0, `(?s)shipped in abc123\n\nReopened \d{4}-\d\d-\d\d: regressed\n$`, "show", a)
+	w.check("second note appended", 0, `(?s)shipped in abc123\n\n\*\*[^\n]* \(human\):\*\*\nReopened: regressed\n$`, "show", a)
 	w.check("abandon two", 0, `(?s): abandoned  First.*: abandoned  Second`, "abandon", a, b)
 	w.check("list json empty array", 0, `^\[\]\n$`, "list", "-json")
 
