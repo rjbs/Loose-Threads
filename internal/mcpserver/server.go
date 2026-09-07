@@ -66,6 +66,14 @@ func New(s *store.Store, defaultProject string) *mcp.Server {
 	}, srv.getThread)
 
 	mcp.AddTool(m, &mcp.Tool{
+		Name: "append_thread",
+		Description: "Add to an existing thread: new context, a partial result, a change of " +
+			"plan.  The text is appended as a paragraph headed by a timestamp and " +
+			"\"(agent)\", so the thread keeps its history.  This is the way to revise " +
+			"a thread; there is no tool for editing one in place.",
+	}, srv.appendThread)
+
+	mcp.AddTool(m, &mcp.Tool{
 		Name: "set_thread_state",
 		Description: "Change a thread's state to open, done, or abandoned.  Use done when " +
 			"the work was completed and abandoned when it will not be.  Pass a note " +
@@ -213,6 +221,32 @@ func (s *server) getThread(ctx context.Context, req *mcp.CallToolRequest, in get
 	if err != nil {
 		return nil, store.View{}, err
 	}
+	return nil, s.store.View(p, t), nil
+}
+
+type appendInput struct {
+	ID      string `json:"id" jsonschema:"thread id, or a unique suffix of one"`
+	Text    string `json:"text" jsonschema:"Markdown to append; a timestamp line is added above it"`
+	Project string `json:"project,omitempty" jsonschema:"project id; defaults to the project of the server's working directory"`
+}
+
+func (s *server) appendThread(ctx context.Context, req *mcp.CallToolRequest, in appendInput) (*mcp.CallToolResult, store.View, error) {
+	if strings.TrimSpace(in.Text) == "" {
+		return nil, store.View{}, fmt.Errorf("text must not be blank")
+	}
+	p, err := s.project(in.Project, false)
+	if err != nil {
+		return nil, store.View{}, err
+	}
+	t, err := s.store.Resolve(p, in.ID)
+	if err != nil {
+		return nil, store.View{}, err
+	}
+	t.Append(in.Text, thread.OriginAgent, s.now().Truncate(time.Second))
+	if err := s.store.Save(p, t); err != nil {
+		return nil, store.View{}, err
+	}
+	s.pushLater(p)
 	return nil, s.store.View(p, t), nil
 }
 

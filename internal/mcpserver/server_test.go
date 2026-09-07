@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,13 @@ func TestTools(t *testing.T) {
 	if !strings.HasSuffix(v.Body, "Abandoned "+time.Now().Format("2006-01-02")+": superseded\n") {
 		t.Errorf("note not appended: %q", v.Body)
 	}
+
+	h.call("append_thread", map[string]any{"id": a.ID, "text": "also affects sync"}, "", &v)
+	if !regexp.MustCompile(`\n\n\*\*\d{4}-\d\d-\d\d \d\d:\d\d \(agent\):\*\*\nalso affects sync\n$`).MatchString(v.Body) {
+		t.Errorf("append not recorded: %q", v.Body)
+	}
+	h.call("append_thread", map[string]any{"id": a.ID, "text": "  "}, "blank", nil)
+	h.call("append_thread", map[string]any{"id": "zzzz", "text": "x"}, "no thread matches", nil)
 
 	h.call("add_thread", map[string]any{"title": "   "}, "blank", nil)
 	h.call("add_thread", map[string]any{}, "missing properties", nil) // schema validation, before the handler

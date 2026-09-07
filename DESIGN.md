@@ -270,6 +270,7 @@ official Go MCP SDK.  Small surface:
 * `add_thread(title, body?, project?, session?, transcript?)`
 * `list_threads(scope?, project?, session?, include_closed?)`
 * `get_thread(id, project?)`
+* `append_thread(id, text, project?)`
 * `set_thread_state(id, state, note?, project?)`
 
 The server does not know which session it is serving.  The agent passes
