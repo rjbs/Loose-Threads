@@ -175,6 +175,25 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func checkAppend(t *testing.T, name, body, text string, by Origin, wantBody string) {
+	t.Helper()
+	th := Thread{State: Open, Body: body}
+	th.Append(text, by, closed)
+	if th.Body != wantBody {
+		t.Errorf("%s: body\n got: %q\nwant: %q", name, th.Body, wantBody)
+	}
+}
+
+func TestAppend(t *testing.T) {
+	checkAppend(t, "agent adds a paragraph", "Title\n\nBody.\n", "Turns out it also affects sync.", OriginAgent,
+		"Title\n\nBody.\n\n**2026-09-05 09:00 (agent):**\nTurns out it also affects sync.\n")
+	checkAppend(t, "human, multi-line, trimmed", "Title\n", "  one\ntwo  \n", OriginHuman,
+		"Title\n\n**2026-09-05 09:00 (human):**\none\ntwo\n")
+	checkAppend(t, "blank text is ignored", "Title\n", "  \n", OriginAgent, "Title\n")
+	checkAppend(t, "body without trailing newline", "Title", "x", OriginAgent,
+		"Title\n\n**2026-09-05 09:00 (agent):**\nx\n")
+}
+
 func TestNewID(t *testing.T) {
 	re := regexp.MustCompile(`^2026-09-04-[abcdefghjkmnpqrstuvwxyz23456789]{6}$`)
 	seen := map[string]bool{}

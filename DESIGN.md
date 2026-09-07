@@ -82,6 +82,21 @@ migrate.  In the browser, `d` and `x` close instantly and `D` and `X`
 prompt for the note, so the quick case stays quick and the prompt is
 there for the case where forgetting is the failure mode.
 
+### Adding to a thread without an editor
+
+`lt edit` is interactive, and an agent has no terminal to be interactive
+in: the first agent to try it hung waiting on vim.  So `lt edit` refuses
+to run without a terminal, and `lt append` (and the `append_thread` MCP
+tool) is the non-interactive way to add to a thread.  It appends a
+paragraph headed by a bold timestamp naming who wrote it:
+
+    **2026-09-08 14:05 (agent):**
+    The same bug affects the sync path; fix both together.
+
+That is the most common revision an agent wants ("add context to this
+thread"), and it keeps the thread's history append-only.  Retitling or
+rewriting a body still means a person and an editor.
+
 ### Thread ids
 
 The filename is the id: `YYYY-MM-DD-xxxxxx`, six random characters
@@ -200,7 +215,8 @@ agent if no MCP server is running.  Rough shape:
     lt done THREAD... [-note WHY]
     lt abandon THREAD... [-note WHY]
     lt reopen THREAD... [-note WHY]
-    lt edit THREAD              # opens $EDITOR
+    lt append THREAD [TEXT | < text] [-origin agent|human]
+    lt edit THREAD              # opens $EDITOR; needs a terminal
     lt project-id [DIR] [-v]    # print the derived identity
     lt rehome                   # move path-identified threads under the remote identity
     lt browse                   # the TUI; bare "lt" at a terminal does the same

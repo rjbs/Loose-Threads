@@ -21,6 +21,7 @@ func init() {
 	register(&command{"done", "mark a thread done", stateCommand(thread.Done)})
 	register(&command{"abandon", "mark a thread abandoned", stateCommand(thread.Abandoned)})
 	register(&command{"reopen", "reopen a closed thread", stateCommand(thread.Open)})
+	register(&command{"append", "add a dated paragraph to a thread", runAppend})
 	register(&command{"edit", "open a thread in $EDITOR", runEdit})
 }
 
@@ -270,6 +271,50 @@ func stateCommand(target thread.State) func([]string) error {
 		pushInBackground(c.store, c.project)
 		return nil
 	}
+}
+
+func runAppend(args []string) error {
+	fs := newFlagSet("append", "THREAD [TEXT]")
+	projectID := fs.String("project", "", "project id (default: derived from the working directory)")
+	origin := fs.String("origin", string(defaultOrigin()), "who is writing: agent or human")
+	pos, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(pos) < 1 || len(pos) > 2 {
+		fs.Usage()
+		return fmt.Errorf("THREAD and optionally TEXT are required; without TEXT, stdin is read")
+	}
+
+	text := ""
+	if len(pos) == 2 {
+		text = pos[1]
+	} else if !stdinIsTerminal() {
+		b, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		text = string(b)
+	}
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("nothing to append")
+	}
+
+	c, err := openWorkspace(*projectID, false)
+	if err != nil {
+		return err
+	}
+	t, err := c.resolveThread(pos[0])
+	if err != nil {
+		return err
+	}
+	t.Append(text, thread.Origin(*origin), now())
+	if err := c.store.Save(c.project, t); err != nil {
+		return err
+	}
+	fmt.Printf("%s: appended  %s\n", t.ID, t.Title())
+	pushInBackground(c.store, c.project)
+	return nil
 }
 
 func runEdit(args []string) error {

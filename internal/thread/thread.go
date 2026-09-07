@@ -170,6 +170,25 @@ func (t *Thread) Resolve(s State, note string, now time.Time) error {
 	if note == "" {
 		return nil
 	}
+	t.appendParagraph(fmt.Sprintf("%s %s: %s", noteWord[s], now.Format("2006-01-02"), note))
+	return nil
+}
+
+// Append adds text to the body as a final paragraph headed by a bold
+// timestamp line naming who wrote it, e.g. "**2026-09-08 14:05 (agent):**".
+// It is how an agent, or a script, adds to a thread without an editor.
+// Blank text is ignored.
+func (t *Thread) Append(text string, by Origin, now time.Time) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	t.appendParagraph(fmt.Sprintf("**%s (%s):**\n%s", now.Format("2006-01-02 15:04"), by, text))
+}
+
+// appendParagraph adds para to the body, separated from what is there by
+// a blank line, and ends it with a newline.
+func (t *Thread) appendParagraph(para string) {
 	body := t.Body
 	if body != "" && !strings.HasSuffix(body, "\n") {
 		body += "\n"
@@ -177,8 +196,7 @@ func (t *Thread) Resolve(s State, note string, now time.Time) error {
 	if body != "" {
 		body += "\n"
 	}
-	t.Body = fmt.Sprintf("%s%s %s: %s\n", body, noteWord[s], now.Format("2006-01-02"), note)
-	return nil
+	t.Body = body + para + "\n"
 }
 
 // IsOpen reports whether the thread is still open.

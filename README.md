@@ -99,6 +99,7 @@ file is fixed, and the next sync commits the resolution.
     lt done 7k2m -note "fixed in abc123"      # note is appended to the thread
     lt abandon 7k2m -note "superseded by the rewrite"
     lt reopen 7k2m
+    lt append 7k2m "also affects sync"        # adds a dated, attributed paragraph
     lt edit 7k2m                # in $EDITOR, cursor on the title line
     lt project-id -v            # what project is this directory?
     lt rehome                   # after adding a remote: move path-identified threads under it
@@ -106,7 +107,10 @@ file is fixed, and the next sync commits the resolution.
 
 Flags may follow positional arguments.  Inside a Claude Code session,
 `lt add` records the session id and marks the thread as agent-created
-without being told.
+without being told, and `lt append` signs its paragraph as the agent.
+`lt edit` refuses to run without a terminal, since an editor started
+without one hangs rather than failing; `lt append` is the way to add
+to a thread from a script or an agent.
 
 In `lt browse`: `a` adds a thread, `A` adds and opens it in your editor,
 `e` or enter edits, `d` marks done, `x` marks abandoned (either again

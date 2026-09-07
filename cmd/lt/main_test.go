@@ -146,6 +146,13 @@ func TestCLI(t *testing.T) {
 	w.check("list all", 0, `(?s)^example\.com/other\n  `+idPat+`  Elsewhere\n$`, "list", "-scope", "all")
 	w.check("list all with states", 0, `(?s)example\.com/other.*\n\ngithub\.com/rjbs/testrepo\n.*\[abandoned\]`, "list", "-scope", "all", "-all-states")
 
+	w.check("append", 0, `^`+regexp.QuoteMeta(b)+`: appended  Second\n$`, "append", b, "More came up.")
+	w.check("append shows dated paragraph", 0, `(?s)Second\n\nstdin body\n\n\*\*\d{4}-\d\d-\d\d \d\d:\d\d \(human\):\*\*\nMore came up\.\n$`, "show", b)
+	w.checkIn("from stdin\n", []string{"CLAUDECODE=1"}, "append from stdin as agent", 0, `appended`, "append", b)
+	w.check("append stdin recorded", 0, `(?s)More came up\.\n\n\*\*[^\n]* \(agent\):\*\*\nfrom stdin\n$`, "show", b)
+	w.check("append nothing", 1, `nothing to append`, "append", b, "  ")
+	w.check("append missing thread", 1, `no thread matches`, "append", "zzzz", "x")
+
 	w.checkIn("", []string{"EDITOR=true"}, "edit without a terminal", 1, `needs a terminal.*lt append[^\n]*\n  .*`+regexp.QuoteMeta(a)+`\.md`, "edit", a)
 
 	w.check("double dash title", 0, idPat, "add", "--", "-leading-dash")

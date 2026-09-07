@@ -99,7 +99,8 @@ func hookSessionStart(in hookInput) error {
 	b.WriteString("was deferred, run `lt list` (this project) or `lt list -scope session` (this\n")
 	b.WriteString("session) rather than recalling from memory.  Close items with `lt done ID` or\n")
 	b.WriteString("`lt abandon ID`, adding `-note \"why\"` when the reason is not obvious from a\n")
-	b.WriteString("commit, especially for threads that were questions to decide.\n\n")
+	b.WriteString("commit, especially for threads that were questions to decide.  To add to an\n")
+	b.WriteString("existing thread, use `lt append ID \"text\"`; `lt edit` needs a terminal.\n\n")
 
 	if in.SessionID != "" {
 		fmt.Fprintf(&b, "Session id: %s\n", in.SessionID)
