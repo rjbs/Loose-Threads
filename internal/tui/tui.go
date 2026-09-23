@@ -147,6 +147,7 @@ func (m *Model) refresh() error {
 func (m *Model) switchProject(i int) error {
 	m.cur = i
 	m.sticky = map[string]bool{}
+	clearFilter(&m.list)
 	m.list.ResetSelected()
 	return m.loadThreads()
 }
@@ -176,7 +177,6 @@ func (m *Model) loadThreads() error {
 	m.threads = ths
 
 	var items []list.Item
-	idx := -1
 	for _, t := range ths {
 		if !t.IsOpen() && !m.showClosed && !m.sticky[t.ID] {
 			continue
@@ -184,20 +184,73 @@ func (m *Model) loadThreads() error {
 		if t.IsOpen() {
 			m.sticky[t.ID] = true
 		}
-		if t.ID == selected {
-			idx = len(items)
-		}
 		items = append(items, threadItem{t})
 	}
-	m.list.SetItems(items)
-	if idx >= 0 {
+	setItems(&m.list, items)
+	visible := m.list.VisibleItems()
+	if idx := visibleIndex(m.list, selected); idx >= 0 {
 		m.list.Select(idx)
-	} else if m.list.Index() >= len(items) && len(items) > 0 {
-		m.list.Select(len(items) - 1)
+	} else if m.list.Index() >= len(visible) && len(visible) > 0 {
+		m.list.Select(len(visible) - 1)
 	}
 	m.fingerprint = m.currentFingerprint()
 	m.layout()
 	return nil
+}
+
+// Filtering.  The list component filters asynchronously: each change to
+// the filter text returns a command whose result, a FilterMatchesMsg, holds
+// the matching items themselves.  If a poll reloads the list between the
+// keystroke and the result, the result carries the old thread values, and
+// acting on one would save stale data over the reload.  The lists are
+// short, so instead we filter synchronously whenever the text or the items
+// change, and drop the component's own FilterMatchesMsg.
+// -- claude, 2026-09-23
+
+// setItems replaces l's items, recomputing the filter's matches at once
+// if one is in place.
+func setItems(l *list.Model, items []list.Item) {
+	if cmd := l.SetItems(items); cmd != nil {
+		if msg, ok := cmd().(list.FilterMatchesMsg); ok {
+			*l, _ = l.Update(msg)
+		}
+	}
+}
+
+// updateFiltering passes a key to l while its filter is being typed,
+// refiltering if the text changed.
+func updateFiltering(l *list.Model, msg tea.KeyMsg) tea.Cmd {
+	before := l.FilterValue()
+	var cmd tea.Cmd
+	*l, cmd = l.Update(msg)
+	if l.FilterValue() != before && l.FilterState() != list.Unfiltered {
+		setItems(l, l.Items())
+	}
+	return cmd
+}
+
+// clearFilter drops l's filter, whether being typed or applied.
+func clearFilter(l *list.Model) {
+	l.ResetFilter()
+	l.FilterInput.Blur()
+}
+
+// clearFilterKey is what terminals send for ctrl-/, the same byte as
+// ctrl-_.
+const clearFilterKey = "ctrl+_"
+
+// visibleIndex returns the position of the thread with id among l's
+// visible items, or -1.
+func visibleIndex(l list.Model, id string) int {
+	if id == "" {
+		return -1
+	}
+	for i, it := range l.VisibleItems() {
+		if it.(threadItem).t.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // openCurrent returns how many of the current project's threads are open.
@@ -331,6 +384,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.poll()
 		return m, tick()
+	case list.FilterMatchesMsg:
+		return m, nil // see "Filtering" above
 	case syncTickMsg:
 		return m, m.syncNow()
 	case syncDoneMsg:
@@ -369,10 +424,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == clearFilterKey {
+		clearFilter(&m.list)
+		return m, nil
+	}
 	if m.list.SettingFilter() {
-		var cmd tea.Cmd
-		m.list, cmd = m.list.Update(msg)
-		return m, cmd
+		return m, updateFiltering(&m.list, msg)
 	}
 
 	switch msg.String() {
@@ -389,6 +446,7 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = m.loadThreads()
 		return m, nil
 	case "p":
+		clearFilter(&m.list)
 		m.openProjects()
 		return m, nil
 	case "[", "]":
@@ -523,7 +581,7 @@ func (m *Model) openProjects() {
 		}
 		items = append(items, projectItem{p, ths, n})
 	}
-	m.plist.SetItems(items)
+	setItems(&m.plist, items)
 	m.plist.Select(m.cur)
 	m.mode = modeProjects
 }
@@ -537,15 +595,18 @@ func (m *Model) refreshPicker() {
 }
 
 func (m *Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == clearFilterKey {
+		clearFilter(&m.plist)
+		return m, nil
+	}
 	if m.plist.SettingFilter() {
-		var cmd tea.Cmd
-		m.plist, cmd = m.plist.Update(msg)
-		return m, cmd
+		return m, updateFiltering(&m.plist, msg)
 	}
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "esc", "p":
+		clearFilter(&m.plist)
 		m.mode = modeThreads
 		return m, nil
 	case "enter":
@@ -556,6 +617,7 @@ func (m *Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		clearFilter(&m.plist)
 		m.mode = modeThreads
 		return m, nil
 	}
@@ -614,10 +676,15 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = err
 			return m, nil
 		}
-		for i, it := range m.list.Items() {
-			if it.(threadItem).t.ID == t.ID {
-				m.list.Select(i)
-			}
+		// A new thread the filter hides would seem not to have been
+		// added, so drop the filter to show it.
+		idx := visibleIndex(m.list, t.ID)
+		if idx < 0 {
+			clearFilter(&m.list)
+			idx = visibleIndex(m.list, t.ID)
+		}
+		if idx >= 0 {
+			m.list.Select(idx)
 		}
 		if m.addAndEdit {
 			return m, m.edit(t)
@@ -733,7 +800,7 @@ func (m *Model) View() string {
 
 	listW, bodyH := m.listWidth(), m.bodyHeight()
 	listH := bodyH - m.warningHeight()
-	left := listView(m.list)
+	left := m.listView(m.list)
 	if th.Panes {
 		left = m.box("threads", left, listW, listH, true)
 	}
@@ -757,7 +824,7 @@ func (m *Model) View() string {
 	}
 
 	footer := m.footerKeys("a: add", "A: add+edit", "e: edit", "d/D: done", "x/X: abandon",
-		"c: closed", "p/[/]: project", "/: filter", "?: help", "q: quit")
+		"c: closed", "p/[/]: project", filterHint(m.list), "?: help", "q: quit")
 	switch m.mode {
 	case modeAdd:
 		footer = th.Prompt.Render(m.input.View()) + th.Footer.Render("   (enter: save, esc: cancel)")
@@ -786,19 +853,28 @@ func (m *Model) box(title, content string, width, height int, focused bool) stri
 }
 
 // listView renders a list without the blank line the component leaves
-// where its (hidden) title bar would be, unless a filter is being typed
-// there.
-func listView(l list.Model) string {
+// where its (hidden) title bar would be.  While a filter is typed, the
+// component draws it there; once applied, the component would show
+// nothing, so we draw it ourselves to keep it clear the list is filtered.
+func (m *Model) listView(l list.Model) string {
 	v := l.View()
-	if l.SettingFilter() || l.FilterState() == list.FilterApplied {
+	if l.SettingFilter() {
 		return v
 	}
 	// The blank title bar is a line of spaces padded to the width, not an
 	// empty line.
-	if first, rest, ok := strings.Cut(v, "\n"); ok && strings.TrimSpace(first) == "" {
-		return rest
+	first, rest, ok := strings.Cut(v, "\n")
+	if !ok || strings.TrimSpace(first) != "" {
+		return v
 	}
-	return v
+	if l.FilterState() == list.FilterApplied {
+		// The title bar's padding matches the component's own filter
+		// line, so accepting the filter doesn't shift the list.
+		line := m.theme.Prompt.Render(l.FilterInput.Prompt+l.FilterValue()) +
+			m.theme.Meta.Render("  (ctrl-/ to clear)")
+		return l.Styles.TitleBar.Render(truncate(line, l.Width())) + "\n" + rest
+	}
+	return rest
 }
 
 // viewPicker is the two-pane project picker: projects on the left, the
@@ -807,7 +883,7 @@ func (m *Model) viewPicker() string {
 	th := m.theme
 	listW, bodyH := m.listWidth(), m.bodyHeight()
 
-	left := listView(m.plist)
+	left := m.listView(m.plist)
 	if th.Panes {
 		left = m.box("projects", left, listW, bodyH, true)
 	}
@@ -825,7 +901,7 @@ func (m *Model) viewPicker() string {
 	}
 
 	header := th.Header.Render(headerGlyph+"Loose Threads") + th.HeaderMeta.Render(fmt.Sprintf("  %d projects", len(m.projects)))
-	footer := m.footerKeys("enter: select", "/: filter", "esc: back", "q: quit")
+	footer := m.footerKeys("enter: select", filterHint(m.plist), "esc: back", "q: quit")
 	return m.frame(header, body, footer)
 }
 
@@ -858,6 +934,15 @@ func (m *Model) viewPickerPreview(width int) string {
 		pad = 0
 	}
 	return lipgloss.NewStyle().Width(width).PaddingLeft(pad).Render(b.String())
+}
+
+// filterHint is the footer's filter key: how to start one, or how to
+// clear the one in place.
+func filterHint(l list.Model) string {
+	if l.FilterState() == list.Unfiltered {
+		return "/: filter"
+	}
+	return "ctrl-/: unfilter"
 }
 
 // footerKeys renders "key: what" hints with the key picked out.
@@ -928,6 +1013,7 @@ var helpSections = [][2]string{
 	{"j / k, ↓ / ↑", "move"},
 	{"g / G", "first / last"},
 	{"/", "filter by title"},
+	{"ctrl-/", "clear the filter"},
 	{"p", "project picker"},
 	{"[ / ]", "previous / next project"},
 

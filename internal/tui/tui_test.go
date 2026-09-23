@@ -74,6 +74,8 @@ func press(m *Model, keys ...string) tea.Cmd {
 			msg = tea.KeyMsg{Type: tea.KeyDown}
 		case "ctrl+r":
 			msg = tea.KeyMsg{Type: tea.KeyCtrlR}
+		case "ctrl+_":
+			msg = tea.KeyMsg{Type: tea.KeyCtrlUnderscore}
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}
@@ -459,4 +461,64 @@ func TestProjectSwitchResetsSticky(t *testing.T) {
 
 	press(m, "]", "[")
 	checkView(t, "gone after leaving and returning", m, []string{projA}, []string{"Alpha one"})
+}
+
+// Filtering.
+
+var filterFixtures = []fixture{
+	{projA, "Maximize coverage", thread.Open},
+	{projA, "Minor fix", thread.Open},
+	{projA, "Taxonomy", thread.Open},
+	{projB, "Beta max", thread.Open},
+	{projB, "Beta other", thread.Open},
+}
+
+// checkFilter starts on project A of filterFixtures, presses keys, and
+// checks the view.
+func checkFilter(t *testing.T, name string, keys []string, wantAll, wantNone []string) {
+	t.Helper()
+	m, _ := newModel(t, projA, filterFixtures...)
+	press(m, keys...)
+	checkView(t, name, m, wantAll, wantNone)
+}
+
+func TestFilter(t *testing.T) {
+	all := []string{"Maximize coverage", "Minor fix", "Taxonomy"}
+	others := []string{"Minor fix", "Taxonomy"}
+	typed := []string{"/", "m", "a", "x"}
+	applied := append(typed, "enter")
+
+	checkFilter(t, "filters as typed", typed, []string{"Maximize coverage"}, others)
+	checkFilter(t, "applied, shown", applied,
+		[]string{"Maximize coverage", "Filter: max", "ctrl-/: unfilter"}, others)
+	checkFilter(t, "navigating keeps it", append(applied, "j", "k"),
+		[]string{"Maximize coverage", "Filter: max"}, others)
+	checkFilter(t, "ctrl-/ clears applied", append(applied, "ctrl+_"), all, []string{"Filter:"})
+	checkFilter(t, "ctrl-/ clears typed", append(typed, "ctrl+_"), all, []string{"Filter:"})
+	checkFilter(t, "esc clears applied", append(applied, "esc"), all, []string{"Filter:"})
+	checkFilter(t, "project switch clears", append(applied, "]", "["), all, []string{"Filter:"})
+	checkFilter(t, "picker clears", append(applied, "p", "esc"), all, []string{"Filter:"})
+	checkFilter(t, "picker filter", []string{"p", "/", "b", "enter"},
+		[]string{projB, "Filter: b"}, []string{"1    " + projA})
+	checkFilter(t, "picker filter cleared on leaving", []string{"p", "/", "b", "enter", "esc", "p"},
+		[]string{projA, projB}, []string{"Filter:"})
+}
+
+func TestFilterSurvivesReload(t *testing.T) {
+	m, s := newModel(t, projA, filterFixtures...)
+	press(m, "/", "m", "a", "x", "enter")
+	externalAdd(t, s, projA, "Max out", now.Add(240*time.Hour))
+	externalAdd(t, s, projA, "Unrelated", now.Add(264*time.Hour))
+	tickOnce(m)
+	checkView(t, "reload refilters", m,
+		[]string{"Maximize coverage", "Max out", "Filter: max"}, []string{"Minor fix", "Unrelated"})
+}
+
+func TestAddClearsHidingFilter(t *testing.T) {
+	m, _ := newModel(t, projA, filterFixtures...)
+	press(m, "/", "m", "a", "x", "enter", "a")
+	typeText(m, "Brand new")
+	press(m, "enter")
+	checkView(t, "hidden new thread clears filter", m,
+		[]string{"Brand new", "Minor fix"}, []string{"Filter:"})
 }
