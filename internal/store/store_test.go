@@ -282,6 +282,39 @@ func TestRehome(t *testing.T) {
 	}
 }
 
+func TestMove(t *testing.T) {
+	s := newStore(t)
+	a := addThread(t, s, "github.com/rjbs/one", "one")
+	addThread(t, s, "github.com/rjbs/one", "stays")
+	b := addThread(t, s, "github.com/rjbs/two", "two")
+	one, _ := s.LookupProject("github.com/rjbs/one")
+	two, _ := s.LookupProject("github.com/rjbs/two")
+
+	if err := s.Move(one, two, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	checkTitles(t, s, "github.com/rjbs/one", 0, "stays")
+	checkTitles(t, s, "github.com/rjbs/two", 0, "one", "two")
+
+	if err := s.Move(one, two, a.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("moving a gone thread: %v, want ErrNotFound", err)
+	}
+	if err := s.Move(two, two, b.ID); err == nil || !strings.Contains(err.Error(), "already in") {
+		t.Errorf("moving to the same project: %v", err)
+	}
+
+	// A collision leaves both files where they were.
+	dup := &thread.Thread{ID: b.ID, State: thread.Open, Body: "dup\n", Created: now}
+	if err := s.Save(one, dup); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Move(two, one, b.ID); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("collision: %v", err)
+	}
+	checkTitles(t, s, "github.com/rjbs/one", 0, "dup", "stays")
+	checkTitles(t, s, "github.com/rjbs/two", 0, "one", "two")
+}
+
 func checkRoute(t *testing.T, c *Config, id, want string) {
 	t.Helper()
 	if got := c.Route(id); got != want {

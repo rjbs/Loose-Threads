@@ -401,6 +401,26 @@ func (s *Store) Save(p *Project, t *thread.Thread) error {
 	return writeAtomic(s.ThreadPath(p, t.ID), data)
 }
 
+// Move relocates the thread with id from one project to another, by
+// renaming its file.  It refuses if the destination already holds a
+// thread with that id.
+func (s *Store) Move(from, to *Project, id string) error {
+	if from.Dir == to.Dir {
+		return fmt.Errorf("store: thread %s is already in %s", id, to.ID)
+	}
+	src := s.ThreadPath(from, id)
+	if _, err := os.Lstat(src); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: thread %q", ErrNotFound, id)
+	} else if err != nil {
+		return err
+	}
+	dst := s.ThreadPath(to, id)
+	if _, err := os.Lstat(dst); err == nil {
+		return fmt.Errorf("store: thread %s already exists in %s", id, to.ID)
+	}
+	return os.Rename(src, dst)
+}
+
 // Rehome moves every thread file from the project fromID into the project
 // toID, creating the destination if needed, and removes the source
 // directory once it is empty.  It refuses to move anything if any thread
