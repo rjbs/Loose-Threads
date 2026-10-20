@@ -80,7 +80,7 @@ body rather than a frontmatter field so it needs no YAML quoting, reads
 naturally in the editor, and accumulates as history if a thread is
 reopened and closed again.  Nothing is structured about it beyond the
 header and label; if resolutions ever need querying, the paragraphs are
-easy to migrate.  In the browser, `d` and `x` close instantly and `D` and `X`
+easy to migrate.  In the browser, `d` and `x` close instantly and `D` and `%`
 prompt for the note, so the quick case stays quick and the prompt is
 there for the case where forgetting is the failure mode.
 
@@ -250,7 +250,7 @@ all projects, with hotkeys for the common edits:
 * show or hide closed threads
 * add a new thread (title prompt, then optionally the editor)
 * open the current thread in `$EDITOR`
-* close with a one-line note (`D`, `X`)
+* close with a one-line note (`D`, `%`)
 * move a thread to another project (`m`, then pick one)
 
 When opening a thread in Vim the invocation can position the cursor on

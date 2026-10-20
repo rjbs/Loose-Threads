@@ -482,12 +482,12 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.toggleState(thread.Done, "")
 	case "x":
 		return m, m.toggleState(thread.Abandoned, "")
-	case "D", "X":
+	case "D", "%":
 		if m.selected() == nil {
 			return m, nil
 		}
 		m.noteTarget = thread.Done
-		if msg.String() == "X" {
+		if msg.String() == "%" {
 			m.noteTarget = thread.Abandoned
 		}
 		m.mode = modeNote
@@ -506,7 +506,7 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// noteVerb describes what pressing D or X on t will do, for the prompt.
+// noteVerb describes what pressing D or % on t will do, for the prompt.
 func noteVerb(t *thread.Thread, target thread.State) string {
 	if t.State == target {
 		return "reopen"
@@ -877,7 +877,7 @@ func (m *Model) View() string {
 			lipgloss.NewStyle().Width(listW).Render(left), " ", detail)
 	}
 
-	footer := m.footerKeys("a: add", "A: add+edit", "e: edit", "d/D: done", "x/X: abandon",
+	footer := m.footerKeys("a: add", "A: add+edit", "e: edit", "d/D: done", "x/%: abandon",
 		"m: move", "c: closed", "p/[/]: project", filterHint(m.list), "?: help", "q: quit")
 	switch m.mode {
 	case modeAdd:
@@ -1081,7 +1081,7 @@ var helpSections = [][2]string{
 	{"e, enter", "open in $EDITOR"},
 	{"d", "mark done (again to reopen)"},
 	{"x", "mark abandoned (again to reopen)"},
-	{"D / X", "the same, after asking why"},
+	{"D / %", "the same, after asking why"},
 	{"m", "move to another project"},
 
 	{"", "The view"},

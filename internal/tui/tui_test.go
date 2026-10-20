@@ -184,7 +184,7 @@ func TestCloseWithNote(t *testing.T) {
 		t.Errorf("note not appended: %q", ths[0].Body)
 	}
 
-	press(m, "X")
+	press(m, "%")
 	checkView(t, "abandon prompt", m, []string{"abandon, because:"}, nil)
 	press(m, "esc")
 	checkState(t, "esc cancels", s, projA, "Other", thread.Open)
