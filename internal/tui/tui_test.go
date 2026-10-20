@@ -256,6 +256,41 @@ func TestProjectSwitching(t *testing.T) {
 	checkView(t, "picked", m, []string{projA, "Alpha one"}, nil)
 }
 
+func TestMoveThread(t *testing.T) {
+	m, s := newModel(t, projA,
+		fixture{projA, "Alpha one", thread.Open},
+		fixture{projA, "Alpha two", thread.Open},
+		fixture{projB, "Beta one", thread.Open},
+	)
+	press(m, "m")
+	checkView(t, "picker asks where", m, []string{"move: Alpha one", "to which project?", "enter: move here"}, nil)
+	press(m, "esc")
+	checkView(t, "esc cancels", m, []string{"Alpha one", "Alpha two"}, nil)
+	checkState(t, "still in alpha", s, projA, "Alpha one", thread.Open)
+	if m.moving != nil {
+		t.Error("esc should forget the thread being moved")
+	}
+
+	press(m, "m", "enter")
+	checkView(t, "same project is a no-op", m, []string{"is already in", "Alpha one"}, nil)
+	checkState(t, "unmoved", s, projA, "Alpha one", thread.Open)
+
+	press(m, "m", "j", "enter")
+	checkState(t, "moved", s, projB, "Alpha one", thread.Open)
+	checkView(t, "gone from alpha", m, []string{"moved to " + projB, "Alpha two", projA}, []string{"Alpha one"})
+	if m.mode != modeThreads {
+		t.Errorf("mode %d after move, want threads", m.mode)
+	}
+	press(m, "]")
+	checkView(t, "present in beta", m, []string{"Alpha one", "Beta one"}, nil)
+
+	// Moving into a project the picker shows but which has no directory
+	// yet creates it, as adding does.
+	m, s = newModel(t, "github.com/rjbs/fresh", fixture{projA, "Wanderer", thread.Open})
+	press(m, "]", "m", "j", "enter")
+	checkState(t, "moved into fresh project", s, "github.com/rjbs/fresh", "Wanderer", thread.Open)
+}
+
 func TestMismatchedProjectWarning(t *testing.T) {
 	m, s := newModel(t, projA, fixture{projA, "One", thread.Open})
 	checkView(t, "no warning normally", m, nil, []string{"warning:"})

@@ -115,9 +115,10 @@ to a thread from a script or an agent.
 In `lt browse`: `a` adds a thread, `A` adds and opens it in your editor,
 `e` or enter edits, `d` marks done, `x` marks abandoned (either again
 reopens), `D` and `X` do the same after asking for a one-line note
-saying why, `c` shows closed threads, `p` opens the project picker
-(projects on the left, the highlighted project's open threads on the
-right), `[` and `]` step between projects, `/` filters by title (the
+saying why, `m` moves the thread to another project (pick one in the
+picker and press enter; esc cancels), `c` shows closed threads, `p`
+opens the project picker (projects on the left, the highlighted
+project's open threads on the right), `[` and `]` step between projects, `/` filters by title (the
 filter stays until ctrl-/ clears it or you change projects), `?` lists
 everything.  Run outside any git repository, the browser opens on the
 picker, since there is no project to show.

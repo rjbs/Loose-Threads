@@ -47,6 +47,10 @@ type Model struct {
 	addAndEdit bool
 	noteTarget thread.State // the state a modeNote prompt will apply
 
+	// moving is the thread the picker is choosing a destination for, or
+	// nil when the picker is just switching projects.
+	moving *thread.Thread
+
 	// sticky holds ids of threads shown as open since the last hard
 	// refresh.  When one of them is closed by someone else it stays on
 	// screen, styled as closed, so that a glance at the list shows the
@@ -449,6 +453,12 @@ func (m *Model) updateThreads(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		clearFilter(&m.list)
 		m.openProjects()
 		return m, nil
+	case "m":
+		if t := m.selected(); t != nil {
+			m.moving = t
+			m.openProjects()
+		}
+		return m, nil
 	case "[", "]":
 		if n := len(m.projects); n > 1 {
 			if msg.String() == "[" {
@@ -538,10 +548,19 @@ func (m *Model) toggleState(target thread.State, note string) tea.Cmd {
 // it has a remote, so browser edits reach the remote like CLI ones do.
 func (m *Model) pushLater() tea.Cmd {
 	p := m.project()
-	if p == nil || m.store.Config().Remote(p.Collection) == "" {
+	if p == nil {
 		return nil
 	}
-	s, name := m.store, p.Collection
+	return m.pushCollection(p.Collection)
+}
+
+// pushCollection syncs the named collection in the background, if it has
+// a remote.
+func (m *Model) pushCollection(name string) tea.Cmd {
+	if m.store.Config().Remote(name) == "" {
+		return nil
+	}
+	s := m.store
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -607,23 +626,58 @@ func (m *Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc", "p":
 		clearFilter(&m.plist)
+		m.moving = nil
 		m.mode = modeThreads
 		return m, nil
 	case "enter":
+		var cmd tea.Cmd
 		if it, ok := m.plist.SelectedItem().(projectItem); ok {
 			for i, p := range m.projects {
-				if p == it.p {
+				if p != it.p {
+					continue
+				}
+				if m.moving != nil {
+					cmd = m.moveTo(i)
+				} else {
 					m.err = m.switchProject(i)
 				}
 			}
 		}
 		clearFilter(&m.plist)
+		m.moving = nil
 		m.mode = modeThreads
-		return m, nil
+		return m, cmd
 	}
 	var cmd tea.Cmd
 	m.plist, cmd = m.plist.Update(msg)
 	return m, cmd
+}
+
+// moveTo moves the thread being moved into project index i, staying on
+// the current project, and pushes both collections involved.
+func (m *Model) moveTo(i int) tea.Cmd {
+	t, from := m.moving, m.project()
+	if i == m.cur {
+		m.status = fmt.Sprintf("%s is already in %s", t.ID, from.DisplayName())
+		return nil
+	}
+	to, err := m.store.Project(m.projects[i].ID) // creates the directory if needed
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	m.projects[i] = to
+	if err := m.store.Move(from, to, t.ID); err != nil {
+		m.err = err
+		return nil
+	}
+	delete(m.sticky, t.ID)
+	m.status = fmt.Sprintf("%s moved to %s", t.ID, to.DisplayName())
+	m.err = m.loadThreads()
+	if to.Collection == from.Collection {
+		return m.pushLater()
+	}
+	return tea.Batch(m.pushLater(), m.pushCollection(to.Collection))
 }
 
 func (m *Model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -824,7 +878,7 @@ func (m *Model) View() string {
 	}
 
 	footer := m.footerKeys("a: add", "A: add+edit", "e: edit", "d/D: done", "x/X: abandon",
-		"c: closed", "p/[/]: project", filterHint(m.list), "?: help", "q: quit")
+		"m: move", "c: closed", "p/[/]: project", filterHint(m.list), "?: help", "q: quit")
 	switch m.mode {
 	case modeAdd:
 		footer = th.Prompt.Render(m.input.View()) + th.Footer.Render("   (enter: save, esc: cancel)")
@@ -902,6 +956,10 @@ func (m *Model) viewPicker() string {
 
 	header := th.Header.Render(headerGlyph+"Loose Threads") + th.HeaderMeta.Render(fmt.Sprintf("  %d projects", len(m.projects)))
 	footer := m.footerKeys("enter: select", filterHint(m.plist), "esc: back", "q: quit")
+	if t := m.moving; t != nil {
+		header = th.Header.Render(headerGlyph+"move: "+t.Title()) + th.HeaderMeta.Render("  "+thread.Suffix(t.ID)+"  to which project?")
+		footer = m.footerKeys("enter: move here", filterHint(m.plist), "esc: cancel", "q: quit")
+	}
 	return m.frame(header, body, footer)
 }
 
@@ -1024,6 +1082,7 @@ var helpSections = [][2]string{
 	{"d", "mark done (again to reopen)"},
 	{"x", "mark abandoned (again to reopen)"},
 	{"D / X", "the same, after asking why"},
+	{"m", "move to another project"},
 
 	{"", "The view"},
 	{"c", "show / hide closed threads"},

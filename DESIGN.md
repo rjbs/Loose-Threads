@@ -251,6 +251,7 @@ all projects, with hotkeys for the common edits:
 * add a new thread (title prompt, then optionally the editor)
 * open the current thread in `$EDITOR`
 * close with a one-line note (`D`, `X`)
+* move a thread to another project (`m`, then pick one)
 
 When opening a thread in Vim the invocation can position the cursor on
 the title line, so the frontmatter-first layout costs nothing.
