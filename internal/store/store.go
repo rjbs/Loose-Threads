@@ -140,6 +140,26 @@ func (s *Store) Project(id string) (*Project, error) {
 	return s.LookupProject(id)
 }
 
+// ProjectIn returns the project with the given id, creating it in the
+// named collection, with the given display name, if it exists nowhere.
+// It is for importing; ordinary creation goes by the routing rules.
+func (s *Store) ProjectIn(id, name, collection string) (*Project, error) {
+	if p, err := s.LookupProject(id); err == nil || !errors.Is(err, ErrNotFound) {
+		return p, err
+	}
+	if name == "" {
+		name = id
+	}
+	err := s.tx(func(tx *sql.Tx) error {
+		_, err := newList(tx, collection, id, name)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.LookupProject(id)
+}
+
 func newList(tx *sql.Tx, collection, id, name string) (*row, error) {
 	r := &row{collection: collection, typ: typeTaskList}
 	return r, setLocal(tx, r, patch.Object{"name": name, propProject: id})

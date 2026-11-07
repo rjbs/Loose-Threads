@@ -215,3 +215,36 @@ func TestRouting(t *testing.T) {
 	w.check("move-project", 0, `github\.com/rjbs/testrepo: work -> personal`, "move-project", "personal")
 	w.check("still listed", 0, `Routed thing`, "list")
 }
+
+// legacyThread writes a thread file into the old Markdown-file layout.
+func (w *world) legacyThread(collection, projectID, dir, id, state, title string) {
+	w.t.Helper()
+	pdir := filepath.Join(w.store, collection, dir)
+	if err := os.MkdirAll(pdir, 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(pdir, "project.yaml"), []byte("id: "+projectID+"\n"), 0o644)
+	body := "---\nstate: " + state + "\ncreated: 2026-09-04T12:40:00-04:00\norigin: agent\n---\n" + title + "\n\nWhy.\n"
+	if err := os.WriteFile(filepath.Join(pdir, id+".md"), []byte(body), 0o644); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func TestMigrate(t *testing.T) {
+	w := newWorld(t)
+	w.legacyThread("personal", "github.com/rjbs/testrepo", "github.com-rjbs-testrepo-aaaaaa", "2026-09-04-aaaaaa", "open", "Old open thread")
+	w.legacyThread("personal", "github.com/rjbs/testrepo", "github.com-rjbs-testrepo-aaaaaa", "2026-09-04-bbbbbb", "done", "Old closed thread")
+	w.legacyThread("local", "/some/path", "some-path-cccccc", "2026-09-04-cccccc", "open", "Path thread")
+
+	// personal is still configured, so its project stays there; local is
+	// always kept.
+	os.WriteFile(filepath.Join(w.store, "config.yaml"), []byte("collections:\n  personal: {}\n"), 0o644)
+
+	w.check("dry run", 0, `(?s)3 threads would be imported`, "migrate", "-n")
+	w.check("nothing yet", 0, `^$`, "list")
+	w.check("migrate", 0, `(?s)github\.com/rjbs/testrepo \[personal\]: 2 imported.*3 threads imported`, "migrate")
+	w.check("open thread listed", 0, `^  2026-09-04-aaaaaa  Old open thread\n$`, "list")
+	w.check("closed thread kept", 0, `2026-09-04-bbbbbb \[done\]`, "list", "-all-states")
+	w.check("body kept", 0, `(?s)state: open.*origin: agent.*Old open thread\n\nWhy\.\n$`, "show", "aaaaaa")
+	w.check("again", 0, `(?s)2 already present.*0 threads imported`, "migrate")
+}
