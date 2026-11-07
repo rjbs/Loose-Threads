@@ -643,7 +643,6 @@ simply be run again.
 ## Non-goals, for now
 
 * Purging or archiving closed threads.
-* Sync between machines.
 * Anything resembling a project management tool: no assignees, no due
   dates, no dependencies.  A thread that lingers long enough to want
   those things gets ported to Linear; Loose Threads does not grow them.
