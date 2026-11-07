@@ -2,41 +2,58 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/rjbs/loosethreads/internal/store"
-	ltsync "github.com/rjbs/loosethreads/internal/sync"
 )
 
 func init() {
-	register(&command{"sync", "sync collections with their git remotes (also: sync add NAME URL)", runSync})
+	register(&command{"sync", "sync collections with their JMAP accounts", runSync})
 }
 
-// syncTimeout bounds one sync's network operations.
+// syncTimeout bounds one sync, including any wait for another sync of
+// the same collection to finish.
 const syncTimeout = 60 * time.Second
 
-// envNoPush disables background pushes after writes, for tests and for
+// envNoSync disables background syncs after writes, for tests and for
 // anyone who prefers to sync by hand.
-const envNoPush = "LOOSETHREADS_NO_PUSH"
+const envNoSync = "LOOSETHREADS_NO_SYNC"
 
-// pushInBackground starts a detached "lt sync" for the collection holding
-// p, if it has a remote, so a write is durable on the remote within
-// seconds without making the caller wait on the network.  Failures are
-// silent here; the next foreground sync will report them.
-func pushInBackground(s *store.Store, p *store.Project) {
-	if p == nil || s.Config().Remote(p.Collection) == "" || os.Getenv(envNoPush) != "" {
+// syncInBackground starts a detached "lt sync" for the collection holding
+// p, if it syncs, so a write reaches the server within seconds without
+// making the caller wait on the network.  Failures are silent here; the
+// next foreground sync reports them.
+func syncInBackground(s *store.Store, p *store.Project) {
+	if p == nil {
+		return
+	}
+	if _, ok := s.Config().Endpoint(p.Collection); ok {
+		spawnSync("-collection", p.Collection)
+	}
+}
+
+// syncAllInBackground starts a detached "lt sync" of every collection
+// that syncs.
+func syncAllInBackground(s *store.Store) {
+	if len(s.Config().Synced()) > 0 {
+		spawnSync()
+	}
+}
+
+func spawnSync(args ...string) {
+	if os.Getenv(envNoSync) != "" {
 		return
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return
 	}
-	cmd := exec.Command(exe, "sync", "-quiet", "-collection", p.Collection)
+	cmd := exec.Command(exe, append([]string{"sync", "-quiet"}, args...)...)
 	cmd.Env = os.Environ()
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -45,61 +62,112 @@ func pushInBackground(s *store.Store, p *store.Project) {
 	go cmd.Wait() // reap if we are still around; harmless if not
 }
 
+// writeSyncProblems adds to the session-start context whatever is wrong
+// with syncing, as recorded by earlier syncs, since the one the hook
+// starts runs in the background where nobody sees its errors.
+func writeSyncProblems(b *strings.Builder, s *store.Store) {
+	sts, err := s.SyncStatuses()
+	if err != nil {
+		fmt.Fprintf(b, "Sync status could not be read: %v.  Mention this to the user.\n\n", err)
+		return
+	}
+	var problems []string
+	for _, st := range sts {
+		problems = append(problems, st.Problems(time.Now())...)
+	}
+	if len(problems) == 0 {
+		return
+	}
+	b.WriteString("Sync is not working.  Threads are safe in the local cache but are not\n")
+	b.WriteString("reaching the server.  Mention this to the user:\n\n")
+	for _, p := range problems {
+		fmt.Fprintf(b, "  - %s\n", p)
+	}
+	b.WriteString("\n")
+}
+
+// printSyncStatus reports on each collection that syncs, for "lt sync
+// -status".  It exits 1 if anything is wrong.
+func printSyncStatus(s *store.Store) error {
+	sts, err := s.SyncStatuses()
+	if err != nil {
+		return err
+	}
+	if len(sts) == 0 {
+		fmt.Println("no collections sync; give one an account in config.yaml")
+		return nil
+	}
+	failed := false
+	for _, st := range sts {
+		last := "never"
+		if !st.Attempted.IsZero() {
+			last = st.Attempted.Local().Format("2006-01-02 15:04")
+		}
+		fmt.Printf("%s: last sync %s, %d waiting, %d refused\n", st.Collection, last, st.Pending, len(st.Rejected))
+		for _, p := range st.Problems(time.Now()) {
+			fmt.Printf("  %s\n", p)
+			failed = true
+		}
+	}
+	if failed {
+		os.Exit(1)
+	}
+	return nil
+}
+
 func runSync(args []string) error {
-	fs := newFlagSet("sync", "[add NAME URL]")
+	fs := newFlagSet("sync", "")
 	collection := fs.String("collection", "", "sync only this collection")
 	quiet := fs.Bool("quiet", false, "print nothing unless something went wrong")
+	status := fs.Bool("status", false, "report how syncing has gone, without syncing")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
+	}
+	if len(pos) != 0 {
+		fs.Usage()
+		return fmt.Errorf("sync takes no arguments")
 	}
 
 	s, err := store.Open("")
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
-	defer cancel()
+	defer s.Close()
 
-	switch {
-	case len(pos) == 3 && pos[0] == "add":
-		r, err := ltsync.Add(ctx, s, pos[1], pos[2])
-		if err != nil && !errors.Is(err, ltsync.ErrConflict) {
-			return err
-		}
-		fmt.Println(r)
-		return nil
-	case len(pos) != 0:
-		fs.Usage()
-		return fmt.Errorf("usage: lt sync [-collection NAME] | lt sync add NAME URL")
+	if *status {
+		return printSyncStatus(s)
 	}
 
-	var results []ltsync.Result
+	names := s.Config().Synced()
 	if *collection != "" {
-		r, err := ltsync.Collection(ctx, s, *collection)
-		if err != nil && !errors.Is(err, ltsync.ErrConflict) {
-			return err
-		}
-		results = []ltsync.Result{r}
-	} else {
-		results, err = ltsync.All(ctx, s)
+		names = []string{*collection}
 	}
-	conflicted := false
-	for _, r := range results {
-		if len(r.Conflicts) > 0 {
-			conflicted = true
+	if len(names) == 0 {
+		if !*quiet {
+			fmt.Println("no collections sync; give one an account in config.yaml")
 		}
-		if !*quiet || len(r.Conflicts) > 0 {
+		return nil
+	}
+
+	failed := false
+	for _, name := range names {
+		ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+		r, err := s.Sync(ctx, name)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "lt sync: %s: %v\n", name, err)
+			failed = true
+			continue
+		}
+		if !*quiet || len(r.Problems) > 0 {
 			fmt.Println(r)
 		}
+		if len(r.Problems) > 0 {
+			failed = true
+		}
 	}
-	if err != nil {
-		return err
-	}
-	if len(results) == 0 && !*quiet {
-		fmt.Println("no collections have remotes; see lt sync add")
-	}
-	if conflicted {
+	if failed {
 		os.Exit(1)
 	}
 	return nil

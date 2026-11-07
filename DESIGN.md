@@ -422,6 +422,259 @@ independently and syncing later do not collide.
 Migration from the current layout: move existing project directories
 under `local/`.
 
+## JMAP for Tasks storage
+
+Proposed 2026-11-06 and built the same day on the jmap-storage branch,
+not yet deployed.  Threads move from Markdown files synced by git to
+JMAP Task objects, held in a local cache and synced with a JMAP for
+Tasks server (TaskMaster, in practice).  The goal is better human
+interfaces: a server gives other clients, web and mobile included,
+something to talk to, and keeping the data in the orthodox JMAP shape
+means general Tasks tools work on it too.  This section supersedes the
+*Storage* and *Sync between machines* sections above, which describe
+the file store that `lt migrate` imports from.
+
+### What agents see
+
+Nothing changes for the agent.  A survey of every Claude Code
+transcript on the laptop (2026-11-06, excluding this project's own
+development) found about 1,290 `lt` invocations across 113 sessions,
+no use of the MCP server, and no reads or edits of thread files at
+all; the only direct contact with the store was one session debugging
+the `lt edit` hang.  Agents almost always pass the full date-prefixed
+id, copied from session-start context or `lt add` output, and never
+use `-json`.  So the CLI's verbs, output, and id format are the whole
+agent interface, and the storage under them can change freely.
+
+### The local cache
+
+Every `lt` command reads and writes a local cache and never waits on
+the network.  This keeps the session-start hook instant, keeps `lt add`
+working on a VM with no connection, and lets local behavior be tested
+without a server.  Sync is a separate step, tested on its own.
+
+The model is Jinx's (`~/code/hub/Jinx/doc/plan.md`), ported rather
+than reused, and cut down to what we need: full mirroring of two
+types, no windowed mode, no blobs.  Each object has:
+
+* a **server version**: the last object fetched from the server,
+  whole, including properties `lt` does not model, or null if the
+  server has never seen it;
+* a **local value**: what `lt` reads, equal to the server version
+  unless a change is pending;
+* at most one **pending entry**, which records that the object was
+  created, changed, or destroyed, but stores no patch.
+
+Reads see only local values, so a pending change reads exactly like a
+synced one.  At sync-out, the patch is the diff from server version to
+local value, so several edits collapse into one patch.  At sync-in, an
+object with a pending change is **rebased**: the patch from its old
+server version to its local value is applied to the newly fetched
+object, a pending local property wins, and everything else takes the
+server's value.
+
+There is no long-running engine.  `lt` is a short-lived process, and
+several may run at once (a few agent sessions and the browser), so
+there is no set of live objects to keep in step.  The cache is one
+SQLite database in WAL mode, which suits several short-lived writers,
+through a pure-Go driver so that `lt` stays free of cgo.  Each write is
+one short transaction.  Rather than Jinx's claims on pending entries,
+only one sync of a collection runs at a time, under a lock file; a
+second waits for the first and then runs, so a write made during a
+sync is never left behind.  The pending mark is a sequence number, and
+a sync clears it only if it is unchanged since the change was sent, so
+a write made while a request is out stays pending.
+
+A write starts a detached sync; the session-start hook shows the cache
+and starts a detached sync rather than waiting for one, so its list may
+be one sync behind.  The browser starts one every minute, and notices
+any change to the cache by a counter every write bumps.
+
+Because these syncs run where nobody sees them, each records its start
+time and error, if any, in the cache.  The session-start hook, the
+browser's footer, and `lt sync -status` report from that record: a
+failed last sync, changes the server refused (the per-object error each
+pending row keeps), and changes left waiting over an hour with no sync
+at all, which means syncs are not running.  Merge conflicts, where the
+local value of a property won, are reported only by a sync run by hand.
+
+Each sync pulls, pushes, and pulls again.  The first pull is what makes
+the description resolver work: rebase happens only on the way in, so a
+pending description pushed without a pull first would replace notes
+appended elsewhere since the last one.  Pulling first narrows that to
+the time between two requests.
+
+A sync is usually one or two requests, after fetching the Session.  The
+pull is one request: for each type, `/changes` and then, by result
+reference, `/get` of what was created and what was updated.  Setting
+`maxChanges` to `maxObjectsInGet` keeps the gets within limits;
+`hasMoreChanges` brings another pull.  The push is one more request,
+holding the Task `/set`, any TaskList destroys, and a second pull,
+which sees what the sets did because a request's calls run in order.
+TaskList creates and updates, which are rare, go in a request of their
+own first, so that Tasks can name new lists by their real ids.  If
+there is nothing to push, there is no second request.  Calls are packed
+into requests within `maxCallsInRequest`, and a full resync of Tasks
+pages through `Task/query`.
+
+### Appends and the description resolver
+
+Rebase works per property, and the body with all of its appended notes
+is one property, `description`.  Left alone, a note appended on one
+machine would replace the description on the server, dropping a note
+appended on another.  Appends are the most common write `lt` makes, so
+`description` gets a resolver.  Given the base (the server version the
+local edit started from), the new server value, and the local value:
+
+* if the server value equals the base, the local value wins, as in any
+  rebase;
+* if the local value begins with the base, the result is the server
+  value followed by what the local value added after the base;
+* otherwise both sides really edited, the local value wins, and the
+  conflict is recorded.
+
+The prefix is taken against the base, never against the server value.
+Two notes written the same day share their opening characters
+(`\n\n**2026-11-06 14:0`), so a common prefix of server and local
+values would run into the notes themselves and cut the local one in
+half.
+
+When both sides appended, the server's note lands first even if the
+local one was written earlier.  That is acceptable.
+
+Full edits through `lt edit` (write a temp file, edit, read it back,
+update the Task) stay possible.  They are rare, and the resolver's
+third case is what catches one that collides with an append.
+
+### Mapping
+
+| `lt` concept           | JMAP for Tasks                                              |
+|------------------------|-------------------------------------------------------------|
+| collection             | account: `{server, accountId}` in `config.yaml`             |
+| project                | TaskList with `lt.semiotic.systems:project`; `name` is display only |
+| thread id              | Task `uid`                                                  |
+| title                  | `title`                                                     |
+| body and notes         | `description`, `text/plain`                                 |
+| state                  | `progress` (below)                                          |
+| `created`              | `created`, falling back to `updated` when absent            |
+| `closed`               | `progressUpdated`                                           |
+| `session`              | `lt.semiotic.systems:session`, nullable                     |
+| `origin`               | keyword `lt.semiotic.systems:origin:agent`; absent means unknown |
+| `transcript`           | dropped                                                     |
+
+Vendor properties and keywords are prefixed `lt.semiotic.systems:`,
+following RFC 8984's owning-domain convention.  Origin is a keyword of
+the form `PREFIX:origin:VALUE` so that more keywords can join it later.
+
+`transcript` was never populated in practice (0 of 522 threads had
+it), held a path meaningful on one machine only, and can be found
+from the session id anyway.
+
+States map to `progress` as: `open` from `needs-action` or
+`in-process`, `done` from `completed`, `abandoned` from `cancelled` or
+`failed`.  `lt` writes only `needs-action`, `completed`, and
+`cancelled`.
+
+### Thread identity
+
+The thread id becomes the Task's `uid`, which JSCalendar makes the
+client's identity for the object.  The server's id stays inside the
+cache.  Because `lt` mints the uid locally, a create whose response is
+lost can be retried safely: the next sync pulls before it pushes, the
+pull brings back the Task that was created, and it matches the pending
+create by uid, which settles it.  This is also what makes migration
+restartable.
+
+The uid is the bare thread id, with no prefix marking it as ours.
+Should one ever be needed, every uid can be rewritten in bulk.
+
+### Projects as TaskLists
+
+A project is a TaskList.  Its identity is the vendor property
+`lt.semiotic.systems:project`, holding the project id, and not its
+`name`, which any client may change; identity in the name would let a
+rename in another client split the project in two.
+
+TaskLists have nothing like `uid`, so two machines that both start a
+new project offline will each create a list for it.  After each pull,
+duplicates are merged, keeping the list with the
+lowest JMAP id (or the oldest, if none has one yet), moving the
+others' Tasks into it, and destroying the empty ones.  The merge
+runs right after the first pull, so a list made here for a project
+another machine already created is absorbed before it is ever sent.
+The same merge settles a list create whose response was lost: the
+next pull brings back the list, of which the pending create is now a
+duplicate.
+The rule is deterministic, so two machines merging at once agree.  Until
+then, reads treat every live list carrying a project id as that project.
+
+Tasks name their lists in `taskListIds`, a map from list id to `true`,
+as TaskMaster implements it.  `lt` keeps each Task in exactly one list;
+one filed elsewhere in several belongs, for `lt`, to the first that is
+a project.  A thread created offline in a project created offline
+refers to a TaskList the server has never seen: its `taskListIds` names
+the pending list by a creation reference made from its local key,
+TaskLists always sync out before Tasks, and the reference is rewritten
+when the real id arrives.  Jinx deferred cross-type references to
+pending creates; with two types and a fixed order, we do not need to.
+
+Moves follow:
+
+* `lt move` (a thread to another project) changes `taskListIds`.
+* `lt rehome` moves every Task into the target project's list and
+  destroys the old list.
+* `lt move-project` (to another collection) is a move between
+  accounts: create in the new account and destroy in the old.  `uid`
+  keeps identity across it.  `Task/copy` would also do, but nothing
+  needs it.
+
+### Foreign lists and tasks
+
+`lt` ignores TaskLists without the project property, so the default
+list TaskMaster creates in each account, or any list made by another
+client, is harmless.  A Task in one of our lists is a thread whether
+or not `lt` created it.  Its session and origin are null, its id is
+whatever uid its client chose (probably a UUID, ugly but working, since
+ids are matched by suffix), and its `created` may need the `updated`
+fallback.
+
+`lt` writes descriptions as `text/plain`.  If one turns up with any
+other content type, `lt append` refuses rather than append Markdown to
+HTML.  This is not expected to happen.
+
+### Servers and accounts
+
+Collections become accounts, likely two (personal and work) on one
+TaskMaster.  Keeping them separate is tidiness, not policy.  The same
+backend is served two ways.  On the tailnet, it authenticates by
+Tailscale login, and a machine there sees every account.  On the public
+internet, it takes a bearer token, which `lt` sends when its config
+gives one; a work VM's token sees only the work account, so its config
+syncs only that collection.  A collection that names its own server
+uses only its own token, so no token is sent anywhere it was not meant
+for.
+
+### Testing
+
+Local reads and writes test against the cache alone.  Sync tests run
+against `internal/jmaptest`, a small in-memory JMAP server serving Task
+and TaskList with change tracking, uid queries, result references, and
+patches.  It advertises small request limits, so a handful of threads
+exercises chunking and paging, counts requests, can carry out a request
+but lose its response, and can answer every `/changes` with
+`cannotCalculateChanges`, which forces a full resync.  It is not
+Jinx's scripted server: its tests are Go code, not data.
+
+### Migration
+
+`lt migrate` makes each existing thread file a pending create in the
+cache, its project's list a pending TaskList create, and the first sync
+pushes them.  Since `uid` is the identity, a migration interrupted
+partway can simply be run again, and two machines migrating the same
+files produce one Task per thread.  On a copy of a real store of 522
+threads, every one came through identical to its file apart from the
+time zone timestamps are shown in.
+
 ## Open questions
 
 * **Same-second ordering.**  `created` has one-second precision, so a
@@ -443,7 +696,6 @@ under `local/`.
 ## Non-goals, for now
 
 * Purging or archiving closed threads.
-* Sync between machines.
 * Anything resembling a project management tool: no assignees, no due
   dates, no dependencies.  A thread that lingers long enough to want
   those things gets ported to Linear; Loose Threads does not grow them.

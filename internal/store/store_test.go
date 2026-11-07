@@ -1,51 +1,42 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rjbs/loosethreads/internal/patch"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
 
 var now = time.Date(2026, 9, 4, 12, 40, 0, 0, time.FixedZone("EDT", -4*3600))
 
-func checkDirName(t *testing.T, id, wantSlug string) {
-	t.Helper()
-	got := DirName(id)
-	re := regexp.MustCompile(`^` + regexp.QuoteMeta(wantSlug) + `-?[0-9a-f]{6}$`)
-	if !re.MatchString(got) {
-		t.Errorf("DirName(%q) = %q, want slug %q plus hash", id, got, wantSlug)
-	}
-	if got != DirName(id) {
-		t.Errorf("DirName(%q) is not deterministic", id)
-	}
-}
-
-func TestDirName(t *testing.T) {
-	checkDirName(t, "github.com/rjbs/Dist-Zilla", "github.com-rjbs-dist-zilla")
-	checkDirName(t, "/Users/rjbs/code/LooseThreads", "users-rjbs-code-loosethreads")
-	checkDirName(t, "host/a  b--c", "host-a-b-c")
-	checkDirName(t, "///", "")
-
-	if DirName("rjbs/foo-bar") == DirName("rjbs/foo/bar") {
-		t.Error("ids with the same slug must get different directories")
-	}
-	if DirName("Host/Foo") == DirName("host/foo") {
-		t.Error("ids differing in case must get different directories")
-	}
-}
-
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "store"))
+	return newStoreWithConfig(t, "")
+}
+
+func newStoreWithConfig(t *testing.T, config string) *Store {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "store")
+	if config != "" {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, configFile), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.Close() })
 	return s
 }
 
@@ -56,16 +47,30 @@ var addClock = now
 
 func addThread(t *testing.T, s *Store, projectID, body string) *thread.Thread {
 	t.Helper()
+	return addThreadWithID(t, s, projectID, "", body)
+}
+
+func addThreadWithID(t *testing.T, s *Store, projectID, id, body string) *thread.Thread {
+	t.Helper()
 	p, err := s.Project(projectID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	addClock = addClock.Add(24 * time.Hour)
-	th := &thread.Thread{State: thread.Open, Body: body}
+	th := &thread.Thread{ID: id, State: thread.Open, Body: body}
 	if err := s.Create(p, th, addClock); err != nil {
 		t.Fatal(err)
 	}
 	return th
+}
+
+func project(t *testing.T, s *Store, id string) *Project {
+	t.Helper()
+	p, err := s.LookupProject(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 func checkProjects(t *testing.T, s *Store, want ...string) {
@@ -78,65 +83,40 @@ func checkProjects(t *testing.T, s *Store, want ...string) {
 	for _, p := range ps {
 		got = append(got, p.DisplayName())
 	}
-	if len(got) != len(want) {
-		t.Fatalf("projects = %q, want %q", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("projects = %q, want %q", got, want)
-			return
-		}
+	if !reflect.DeepEqual(got, want) && (len(got) != 0 || len(want) != 0) {
+		t.Errorf("projects = %q, want %q", got, want)
 	}
 }
 
-func checkTitles(t *testing.T, s *Store, projectID string, wantErrs int, want ...string) {
+func checkTitles(t *testing.T, s *Store, projectID string, want ...string) {
 	t.Helper()
-	p, err := s.LookupProject(projectID)
+	ths, err := s.Threads(project(t, s, projectID))
 	if err != nil {
 		t.Fatal(err)
-	}
-	ths, errs, err := s.Threads(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(errs) != wantErrs {
-		t.Errorf("%s: %d parse errors, want %d: %v", projectID, len(errs), wantErrs, errs)
 	}
 	var got []string
 	for _, th := range ths {
 		got = append(got, th.Title())
 	}
-	if len(got) != len(want) {
-		t.Fatalf("%s: titles = %q, want %q", projectID, got, want)
+	if !reflect.DeepEqual(got, want) && (len(got) != 0 || len(want) != 0) {
+		t.Errorf("%s: titles = %q, want %q", projectID, got, want)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("%s: titles = %q, want %q", projectID, got, want)
-			return
-		}
+}
+
+func checkErrorContains(t *testing.T, what string, err error, want string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("%s: error %v, want one containing %q", what, err, want)
 	}
 }
 
 func TestProjects(t *testing.T) {
 	s := newStore(t)
-	checkProjects(t, s) // no root yet
+	checkProjects(t, s)
 
 	addThread(t, s, "github.com/rjbs/zed", "z")
 	addThread(t, s, "github.com/rjbs/alpha", "a")
 	checkProjects(t, s, "github.com/rjbs/alpha", "github.com/rjbs/zed")
-
-	p, _ := s.LookupProject("github.com/rjbs/zed")
-	p.Name = "Aardvark"
-	if err := s.SaveProject(p); err != nil {
-		t.Fatal(err)
-	}
-	checkProjects(t, s, "Aardvark", "github.com/rjbs/alpha")
-
-	// A stray directory with no project.yaml is not a project.
-	if err := os.MkdirAll(filepath.Join(s.Root, "junk"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	checkProjects(t, s, "Aardvark", "github.com/rjbs/alpha")
 
 	if _, err := s.LookupProject("nope"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("LookupProject(nope) = %v, want ErrNotFound", err)
@@ -149,15 +129,14 @@ func TestThreads(t *testing.T) {
 
 	first := addThread(t, s, pid, "First\n")
 	addThread(t, s, pid, "Second\n\nWith body.\n")
-	checkTitles(t, s, pid, 0, "First", "Second")
+	checkTitles(t, s, pid, "First", "Second")
 
-	p, _ := s.LookupProject(pid)
-
+	p := project(t, s, pid)
 	got, err := s.Get(p, first.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title() != "First" || got.State != thread.Open || got.Created.IsZero() {
+	if got.Title() != "First" || got.State != thread.Open || !got.Created.Equal(first.Created) {
 		t.Errorf("Get returned %+v", got)
 	}
 
@@ -168,77 +147,123 @@ func TestThreads(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, _ := s.Get(p, first.ID)
-	if again.State != thread.Done || again.Closed == nil {
+	if again.State != thread.Done || again.Closed == nil || !again.Closed.Equal(now) {
 		t.Errorf("state change did not persist: %+v", again)
 	}
 
 	if _, err := s.Get(p, "2026-01-01-zzzz"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Get(missing) = %v, want ErrNotFound", err)
 	}
-
-	// A malformed file is reported, not fatal.
-	if err := os.WriteFile(filepath.Join(p.Dir, "2026-09-04-bad!.md"), []byte("garbage"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(p.Dir, "notes.txt"), []byte("ignored"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ths, errs, err := s.Threads(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ths) != 2 || len(errs) != 1 {
-		t.Errorf("got %d threads and %d errors, want 2 and 1", len(ths), len(errs))
-	}
 }
 
 func TestThreadsSortByCreation(t *testing.T) {
 	s := newStore(t)
 	p, _ := s.Project("p")
-	later := &thread.Thread{State: thread.Open, Body: "later\n"}
-	earlier := &thread.Thread{State: thread.Open, Body: "earlier\n"}
-	// Same day, so the ids share a date prefix; force the id order to
-	// contradict the creation order.
-	later.ID, later.Created = "2026-09-04-aaaa", now.Add(time.Hour)
-	earlier.ID, earlier.Created = "2026-09-04-zzzz", now
+	later := &thread.Thread{ID: "2026-09-04-aaaa", State: thread.Open, Body: "later\n", Created: now.Add(time.Hour)}
+	earlier := &thread.Thread{ID: "2026-09-04-zzzz", State: thread.Open, Body: "earlier\n", Created: now}
 	for _, th := range []*thread.Thread{later, earlier} {
-		if err := s.Save(p, th); err != nil {
+		if err := s.Create(p, th, now); err != nil {
 			t.Fatal(err)
 		}
 	}
-	checkTitles(t, s, "p", 0, "earlier", "later")
+	checkTitles(t, s, "p", "earlier", "later")
 }
 
-func TestMismatched(t *testing.T) {
+// checkRoundTrip saves th and reads it back, expecting it unchanged.
+func checkRoundTrip(t *testing.T, name string, th *thread.Thread) {
+	t.Helper()
 	s := newStore(t)
-	addThread(t, s, "github.com/rjbs/right", "x")
-	p, _ := s.LookupProject("github.com/rjbs/right")
-	if p.Mismatched() {
-		t.Error("freshly created project reports mismatch")
-	}
-
-	// Simulate a hand relocation that carried the wrong project.yaml along.
-	if err := os.WriteFile(filepath.Join(p.Dir, "project.yaml"), []byte("id: /some/old/path\n"), 0o644); err != nil {
+	p, _ := s.Project("p")
+	if err := s.Create(p, th, now); err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.LookupProject("github.com/rjbs/right")
+	got, err := s.Get(p, th.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !p.Mismatched() {
-		t.Errorf("project.yaml with id %q in dir %s should be mismatched", p.ID, filepath.Base(p.Dir))
+	same := got.ID == th.ID && got.State == th.State && got.Created.Equal(th.Created) &&
+		got.Session == th.Session && got.Origin == th.Origin && got.Body == th.Body &&
+		(got.Closed == nil) == (th.Closed == nil) && (got.Closed == nil || got.Closed.Equal(*th.Closed))
+	if !same {
+		t.Errorf("%s: round trip\n got: %+v\nwant: %+v", name, got, th)
 	}
-	ps, _ := s.Projects()
-	if len(ps) != 1 || !ps[0].Mismatched() {
-		t.Errorf("Projects should report the mismatched project: %+v", ps)
+}
+
+func TestRoundTrip(t *testing.T) {
+	closed := now.Add(time.Hour)
+	checkRoundTrip(t, "title only",
+		&thread.Thread{ID: "2026-09-04-aaaaaa", State: thread.Open, Created: now, Body: "Just a title\n"})
+	checkRoundTrip(t, "everything",
+		&thread.Thread{ID: "2026-09-04-bbbbbb", State: thread.Done, Created: now, Closed: &closed,
+			Session: "abc-123", Origin: thread.OriginAgent,
+			Body: "Title: with colon\n\nBody paragraph.\n\n**2026-09-04 13:40 (agent):**\nDone: yes.\n"})
+	checkRoundTrip(t, "abandoned by a human",
+		&thread.Thread{ID: "2026-09-04-cccccc", State: thread.Abandoned, Created: now, Closed: &closed,
+			Origin: thread.OriginHuman, Body: "Nope\n\nnot doing it\n"})
+}
+
+// checkTask creates th and compares the Task stored for it with want,
+// given as JSON.
+func checkTask(t *testing.T, th *thread.Thread, want string) {
+	t.Helper()
+	s := newStore(t)
+	p, _ := s.Project("p")
+	if err := s.Create(p, th, now); err != nil {
+		t.Fatal(err)
 	}
+	r, err := taskRow(s.db, p, th.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := mustObject(t, want)
+	w["taskListIds"] = r.local["taskListIds"]
+	if !patch.Equal(r.local, w) {
+		t.Errorf("task = %v\nwant %v", r.local, w)
+	}
+}
+
+func TestTaskShape(t *testing.T) {
+	closed := now.Add(time.Hour)
+	checkTask(t,
+		&thread.Thread{ID: "2026-09-04-aaaaaa", State: thread.Done, Created: now, Closed: &closed,
+			Session: "s-1", Origin: thread.OriginAgent, Body: "The title\n\nThe body.\n"},
+		`{"@type":"Task","uid":"2026-09-04-aaaaaa","title":"The title","description":"The body.\n",
+		  "created":"2026-09-04T16:40:00Z","progress":"completed","progressUpdated":"2026-09-04T17:40:00Z",
+		  "lt.semiotic.systems:session":"s-1","keywords":{"lt.semiotic.systems:origin:agent":true}}`)
+	checkTask(t,
+		&thread.Thread{ID: "2026-09-04-bbbbbb", State: thread.Open, Created: now, Body: "Bare\n"},
+		`{"@type":"Task","uid":"2026-09-04-bbbbbb","title":"Bare","description":"",
+		  "created":"2026-09-04T16:40:00Z","progress":"needs-action"}`)
+}
+
+// checkForeignTask reads a Task some other client made and compares the
+// thread lt sees.
+func checkForeignTask(t *testing.T, task string, state thread.State, body string, created time.Time) {
+	t.Helper()
+	th := threadFromTask(mustObject(t, task))
+	if th.State != state || th.Body != body || !th.Created.Equal(created) || th.Session != "" || th.Origin != "" {
+		t.Errorf("thread from %s = %+v", task, th)
+	}
+}
+
+func TestForeignTasks(t *testing.T) {
+	updated := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	checkForeignTask(t, `{"uid":"u1","title":"T","updated":"2026-10-01T12:00:00Z"}`, thread.Open, "T\n", updated)
+	checkForeignTask(t, `{"uid":"u2","title":"T","progress":"in-process","created":"2026-10-01T12:00:00Z"}`, thread.Open, "T\n", updated)
+	checkForeignTask(t, `{"uid":"u3","title":"T","progress":"failed","created":"2026-10-01T12:00:00Z"}`, thread.Abandoned, "T\n", updated)
+}
+
+func TestNonPlainDescriptionRefused(t *testing.T) {
+	th := &thread.Thread{ID: "x", State: thread.Open, Body: "T\n\nmore\n"}
+	task := patch.Object{"uid": "x", "title": "T", "description": "<p>hi</p>", "descriptionContentType": "text/html"}
+	_, err := applyThread(task, th)
+	checkErrorContains(t, "appending to HTML", err, "text/html")
 }
 
 func TestRehome(t *testing.T) {
 	s := newStore(t)
-	a := addThread(t, s, "/old/path", "one")
-	b := addThread(t, s, "/old/path", "two")
-	old, _ := s.LookupProject("/old/path")
+	addThread(t, s, "/old/path", "one")
+	addThread(t, s, "/old/path", "two")
 
 	moved, err := s.Rehome("/old/path", "github.com/rjbs/new")
 	if err != nil {
@@ -247,10 +272,7 @@ func TestRehome(t *testing.T) {
 	if len(moved) != 2 {
 		t.Errorf("moved %v", moved)
 	}
-	checkTitles(t, s, "github.com/rjbs/new", 0, "one", "two")
-	if _, err := os.Stat(old.Dir); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("old directory still present: %v", err)
-	}
+	checkTitles(t, s, "github.com/rjbs/new", "one", "two")
 	checkProjects(t, s, "github.com/rjbs/new")
 
 	if _, err := s.Rehome("/old/path", "github.com/rjbs/new"); !errors.Is(err, ErrNotFound) {
@@ -259,20 +281,13 @@ func TestRehome(t *testing.T) {
 
 	// A collision refuses to move anything.
 	c := addThread(t, s, "/other/path", "three")
-	newP, _ := s.LookupProject("github.com/rjbs/new")
-	dup := &thread.Thread{ID: c.ID, State: thread.Open, Body: "dup\n", Created: now}
-	if err := s.Save(newP, dup); err != nil {
-		t.Fatal(err)
-	}
+	addThreadWithID(t, s, "github.com/rjbs/new", c.ID, "dup\n")
 	addThread(t, s, "/other/path", "four")
-	if _, err := s.Rehome("/other/path", "github.com/rjbs/new"); err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("collision: %v", err)
-	}
-	checkTitles(t, s, "/other/path", 0, "three", "four")
-	_ = a
-	_ = b
+	_, err = s.Rehome("/other/path", "github.com/rjbs/new")
+	checkErrorContains(t, "collision", err, "already exists")
+	checkTitles(t, s, "/other/path", "three", "four")
 
-	// An empty source project moves nothing and is left alone.
+	// An empty source project moves nothing.
 	if _, err := s.Project("/empty/path"); err != nil {
 		t.Fatal(err)
 	}
@@ -287,32 +302,48 @@ func TestMove(t *testing.T) {
 	a := addThread(t, s, "github.com/rjbs/one", "one")
 	addThread(t, s, "github.com/rjbs/one", "stays")
 	b := addThread(t, s, "github.com/rjbs/two", "two")
-	one, _ := s.LookupProject("github.com/rjbs/one")
-	two, _ := s.LookupProject("github.com/rjbs/two")
+	one := project(t, s, "github.com/rjbs/one")
+	two := project(t, s, "github.com/rjbs/two")
 
 	if err := s.Move(one, two, a.ID); err != nil {
 		t.Fatal(err)
 	}
-	checkTitles(t, s, "github.com/rjbs/one", 0, "stays")
-	checkTitles(t, s, "github.com/rjbs/two", 0, "one", "two")
+	checkTitles(t, s, "github.com/rjbs/one", "stays")
+	checkTitles(t, s, "github.com/rjbs/two", "one", "two")
 
 	if err := s.Move(one, two, a.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("moving a gone thread: %v, want ErrNotFound", err)
 	}
-	if err := s.Move(two, two, b.ID); err == nil || !strings.Contains(err.Error(), "already in") {
-		t.Errorf("moving to the same project: %v", err)
-	}
+	checkErrorContains(t, "same project", s.Move(two, two, b.ID), "already in")
 
-	// A collision leaves both files where they were.
-	dup := &thread.Thread{ID: b.ID, State: thread.Open, Body: "dup\n", Created: now}
-	if err := s.Save(one, dup); err != nil {
+	addThreadWithID(t, s, "github.com/rjbs/one", b.ID, "dup\n")
+	checkErrorContains(t, "collision", s.Move(two, one, b.ID), "already exists")
+	checkTitles(t, s, "github.com/rjbs/one", "stays", "dup")
+	checkTitles(t, s, "github.com/rjbs/two", "one", "two")
+}
+
+func TestMoveProject(t *testing.T) {
+	s := newStore(t)
+	a := addThread(t, s, "p", "one")
+	addThread(t, s, "p", "two")
+
+	p, err := s.MoveProject("p", "work")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Move(two, one, b.ID); err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("collision: %v", err)
+	if p.Collection != "work" {
+		t.Errorf("moved project is in %q", p.Collection)
 	}
-	checkTitles(t, s, "github.com/rjbs/one", 0, "dup", "stays")
-	checkTitles(t, s, "github.com/rjbs/two", 0, "one", "two")
+	checkTitles(t, s, "p", "one", "two")
+	if got, _ := s.Get(p, a.ID); got == nil || got.Title() != "one" {
+		t.Errorf("thread %s did not keep its id across the move", a.ID)
+	}
+	// Nothing in local was ever synced, so nothing is left behind there.
+	n := 0
+	s.db.QueryRow(`SELECT count(*) FROM objects WHERE collection = 'local'`).Scan(&n)
+	if n != 0 {
+		t.Errorf("%d objects left in local", n)
+	}
 }
 
 func checkRoute(t *testing.T, c *Config, id, want string) {
@@ -332,99 +363,58 @@ func TestRouting(t *testing.T) {
 	checkRoute(t, c, "github.com/fastmail/cyrus", "work")
 	checkRoute(t, c, "gitbox.fastmail.com/a/b/c", "work")
 	checkRoute(t, c, "github.com/rjbs/Dist-Zilla", "personal")
-	checkRoute(t, c, "github.com/rjbs", LocalCollection) // no trailing segment
+	checkRoute(t, c, "github.com/rjbs", LocalCollection)
 	checkRoute(t, c, "example.com/x/secret1", "hidden")
 	checkRoute(t, c, "example.com/other", LocalCollection)
 	checkRoute(t, &Config{}, "anything", LocalCollection)
 }
 
-func TestCollections(t *testing.T) {
-	s := newStore(t)
-	s.Config().Routes = []Route{{"github.com/work/*", "work"}}
-	s.Config().Collections = map[string]CollectionConfig{"work": {Remote: "git@example.com:threads.git"}}
-	if err := s.SaveConfig(); err != nil {
-		t.Fatal(err)
-	}
-
-	work := addThread(t, s, "github.com/work/thing", "w")
-	home := addThread(t, s, "github.com/home/thing", "h")
-	_ = work
-	_ = home
-
-	wp, _ := s.LookupProject("github.com/work/thing")
-	hp, _ := s.LookupProject("github.com/home/thing")
-	if wp.Collection != "work" || filepath.Base(filepath.Dir(wp.Dir)) != "work" {
-		t.Errorf("work project in %q at %s", wp.Collection, wp.Dir)
-	}
-	if hp.Collection != LocalCollection {
-		t.Errorf("unrouted project in %q", hp.Collection)
-	}
-	checkProjects(t, s, "github.com/home/thing", "github.com/work/thing")
-
-	names, _ := s.Collections()
-	if strings.Join(names, ",") != "local,work" {
-		t.Errorf("collections %v", names)
-	}
-	if s.Config().Remote("work") == "" || s.Config().Remote(LocalCollection) != "" {
-		t.Error("remotes wrong")
-	}
-
-	// Reopening reads the config back.
-	again, err := Open(s.Root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(again.Config().Routes) != 1 {
-		t.Errorf("config not persisted: %+v", again.Config())
-	}
-
-	moved, err := s.MoveProject("github.com/home/thing", "work")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if moved.Collection != "work" {
-		t.Errorf("moved to %q", moved.Collection)
-	}
-	checkTitles(t, s, "github.com/home/thing", 0, "h")
-	if _, err := s.MoveProject("github.com/home/thing", "work"); err != nil {
-		t.Errorf("moving to where it already is should be a no-op: %v", err)
+func checkEndpoint(t *testing.T, c *Config, collection string, want Endpoint, ok bool) {
+	t.Helper()
+	got, gok := c.Endpoint(collection)
+	if gok != ok || (ok && got != want) {
+		t.Errorf("Endpoint(%q) = %+v, %v; want %+v, %v", collection, got, gok, want, ok)
 	}
 }
 
-func TestMigrateFlatLayout(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "store")
-	old := filepath.Join(root, DirName("github.com/rjbs/old"))
-	if err := os.MkdirAll(old, 0o755); err != nil {
-		t.Fatal(err)
+func TestEndpoint(t *testing.T) {
+	c := &Config{
+		Server: "http://tm/jmap/session",
+		Token:  "store-token",
+		Collections: map[string]CollectionConfig{
+			"personal":  {Account: "rjbs"},
+			"own":       {Account: "rjbs", Token: "own-token"},
+			"work":      {Account: "work", Server: "http://other/jmap/session"},
+			"elsewhere": {Account: "x", Server: "http://else/jmap/session", Token: "else-token"},
+			"unsynced":  {},
+		},
 	}
-	os.WriteFile(filepath.Join(old, "project.yaml"), []byte("id: github.com/rjbs/old\n"), 0o644)
-	os.WriteFile(filepath.Join(old, "2026-01-01-abcdef.md"), []byte("---\nstate: open\n---\nOld\n"), 0o644)
+	checkEndpoint(t, c, "personal", Endpoint{"http://tm/jmap/session", "store-token", "rjbs"}, true)
+	checkEndpoint(t, c, "own", Endpoint{"http://tm/jmap/session", "own-token", "rjbs"}, true)
+	checkEndpoint(t, c, "work", Endpoint{"http://other/jmap/session", "", "work"}, true)
+	checkEndpoint(t, c, "elsewhere", Endpoint{"http://else/jmap/session", "else-token", "x"}, true)
+	checkEndpoint(t, c, "unsynced", Endpoint{}, false)
+	checkEndpoint(t, c, LocalCollection, Endpoint{}, false)
+	checkEndpoint(t, &Config{Collections: map[string]CollectionConfig{"x": {Account: "a"}}}, "x", Endpoint{}, false)
+}
 
-	s, err := Open(root)
-	if err != nil {
-		t.Fatal(err)
+func TestRoutedProjectLandsInCollection(t *testing.T) {
+	s := newStoreWithConfig(t, "routes:\n  - { match: \"github.com/rjbs/*\", collection: personal }\n")
+	addThread(t, s, "github.com/rjbs/x", "x")
+	addThread(t, s, "elsewhere", "y")
+	if p := project(t, s, "github.com/rjbs/x"); p.Collection != "personal" {
+		t.Errorf("routed project in %q", p.Collection)
 	}
-	p, err := s.LookupProject("github.com/rjbs/old")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Collection != LocalCollection {
-		t.Errorf("migrated into %q", p.Collection)
-	}
-	checkTitles(t, s, "github.com/rjbs/old", 0, "Old")
-	if _, err := os.Stat(old); !errors.Is(err, os.ErrNotExist) {
-		t.Error("old directory still present")
+	if p := project(t, s, "elsewhere"); p.Collection != LocalCollection {
+		t.Errorf("unrouted project in %q", p.Collection)
 	}
 }
 
-func TestAtomicWriteLeavesNoTempFiles(t *testing.T) {
-	s := newStore(t)
-	addThread(t, s, "p", "x")
-	p, _ := s.LookupProject("p")
-	entries, _ := os.ReadDir(p.Dir)
-	for _, e := range entries {
-		if e.Name()[0] == '.' {
-			t.Errorf("temp file left behind: %s", e.Name())
-		}
+func mustObject(t *testing.T, s string) patch.Object {
+	t.Helper()
+	var o patch.Object
+	if err := json.Unmarshal([]byte(s), &o); err != nil {
+		t.Fatalf("bad test JSON %s: %v", s, err)
 	}
+	return o
 }

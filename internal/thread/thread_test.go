@@ -39,7 +39,7 @@ func checkRoundTrip(t *testing.T, name string, th Thread, want string) {
 
 func equal(a, b Thread) bool {
 	if a.State != b.State || !a.Created.Equal(b.Created) || a.Session != b.Session ||
-		a.Transcript != b.Transcript || a.Origin != b.Origin || a.Body != b.Body {
+		a.Origin != b.Origin || a.Body != b.Body {
 		return false
 	}
 	switch {
@@ -99,11 +99,11 @@ func TestRoundTrip(t *testing.T) {
 	checkRoundTrip(t, "all fields",
 		Thread{
 			State: Done, Created: created, Session: "abc-123",
-			Transcript: "/t/abc.jsonl", Closed: &closed, Origin: OriginAgent,
+			Closed: &closed, Origin: OriginAgent,
 			Body: "Title: with colon [and] #hash\n\nBody paragraph.\n",
 		},
 		"---\nstate: done\ncreated: 2026-09-04T12:40:00-04:00\nsession: abc-123\n"+
-			"transcript: /t/abc.jsonl\nclosed: 2026-09-05T09:00:00-04:00\norigin: agent\n---\n"+
+			"closed: 2026-09-05T09:00:00-04:00\norigin: agent\n---\n"+
 			"Title: with colon [and] #hash\n\nBody paragraph.\n")
 
 	checkRoundTrip(t, "body gets trailing newline",

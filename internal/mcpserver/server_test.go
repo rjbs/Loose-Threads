@@ -29,7 +29,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(s, defaultProject)
+	srv := New(s, defaultProject, nil)
 
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
@@ -178,7 +178,7 @@ func TestNoDefaultProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(s, "")
+	srv := New(s, "", nil)
 	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, st, nil); err != nil {

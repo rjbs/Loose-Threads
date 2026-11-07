@@ -12,45 +12,71 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// LocalCollection is the collection with no remote, where projects land
+// LocalCollection is the collection with no account, where projects land
 // when no route claims them.  It always exists.
 const LocalCollection = "local"
 
 const configFile = "config.yaml"
 
-// Config is the store's config.yaml: the collections that may be synced,
-// the rules that route a new project into one, and the identity sync
-// commits are made with.
+// Config is the store's config.yaml: the JMAP server, the collections
+// that may be synced with accounts on it, and the rules that route a new
+// project into a collection.
 type Config struct {
-	Author      *Author                     `yaml:"author,omitempty"`
+	Server      string                      `yaml:"server,omitempty"`
+	Token       string                      `yaml:"token,omitempty"`
 	Collections map[string]CollectionConfig `yaml:"collections,omitempty"`
 	Routes      []Route                     `yaml:"routes,omitempty"`
 }
 
 // CollectionConfig describes one collection.  A collection with no
-// remote is never synced.  Author, if set, overrides the store's.
+// account is never synced.  Server, if set, overrides the store's: it is
+// the URL of the JMAP Session resource.  Token is a bearer token for the
+// server; without one, requests carry no credentials, as on a tailnet.
 type CollectionConfig struct {
-	Remote string  `yaml:"remote,omitempty"`
-	Author *Author `yaml:"author,omitempty"`
+	Server  string `yaml:"server,omitempty"`
+	Token   string `yaml:"token,omitempty"`
+	Account string `yaml:"account,omitempty"`
 }
 
-// Author is a git identity for sync commits.
-type Author struct {
-	Name  string `yaml:"name"`
-	Email string `yaml:"email"`
+// Endpoint is where a collection syncs: a Session URL, the bearer token
+// to present there, if any, and the account id.
+type Endpoint struct {
+	Server, Token, Account string
 }
 
-// AuthorFor returns the identity sync commits in the named collection
-// should carry: the collection's, else the store's, else nil (meaning
-// let git decide).
-func (c *Config) AuthorFor(collection string) *Author {
+// Endpoint returns where the named collection syncs, and whether it
+// syncs at all.  A collection's own token is used if it has one;
+// otherwise the store's, but only along with the store's server, so that
+// a collection with a server of its own never sends the store's token
+// there.
+func (c *Config) Endpoint(collection string) (Endpoint, bool) {
 	if c == nil {
-		return nil
+		return Endpoint{}, false
 	}
-	if cc, ok := c.Collections[collection]; ok && cc.Author != nil {
-		return cc.Author
+	cc, found := c.Collections[collection]
+	if !found || cc.Account == "" {
+		return Endpoint{}, false
 	}
-	return c.Author
+	e := Endpoint{Server: cc.Server, Token: cc.Token, Account: cc.Account}
+	if e.Server == "" {
+		e.Server = c.Server
+		if e.Token == "" {
+			e.Token = c.Token
+		}
+	}
+	return e, e.Server != ""
+}
+
+// Synced lists the collections that sync, sorted.
+func (c *Config) Synced() []string {
+	var names []string
+	for name := range c.Collections {
+		if _, ok := c.Endpoint(name); ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Route sends projects whose id matches a glob to a collection.  "*"
@@ -84,21 +110,8 @@ func (s *Store) loadConfig() error {
 	return nil
 }
 
-// Config returns the loaded configuration.  Callers may modify it and
-// then SaveConfig.
+// Config returns the loaded configuration.
 func (s *Store) Config() *Config { return s.config }
-
-// SaveConfig writes config.yaml.
-func (s *Store) SaveConfig() error {
-	if err := os.MkdirAll(s.Root, 0o755); err != nil {
-		return err
-	}
-	data, err := yaml.Marshal(s.config)
-	if err != nil {
-		return err
-	}
-	return writeAtomic(s.configPath(), data)
-}
 
 // Route returns the collection a project with the given id belongs in:
 // the first matching route's, else local.
@@ -113,14 +126,6 @@ func (c *Config) Route(id string) string {
 		}
 	}
 	return LocalCollection
-}
-
-// Remote returns the remote of the named collection, or "".
-func (c *Config) Remote(collection string) string {
-	if c == nil || c.Collections == nil {
-		return ""
-	}
-	return c.Collections[collection].Remote
 }
 
 func globRegexp(glob string) (*regexp.Regexp, error) {
@@ -140,26 +145,27 @@ func globRegexp(glob string) (*regexp.Regexp, error) {
 	return regexp.Compile(b.String())
 }
 
-// CollectionDir returns the directory of a collection.
-func (s *Store) CollectionDir(name string) string {
-	return filepath.Join(s.Root, name)
-}
-
 // Collections lists collection names: local, every configured one, and
-// every directory under the root, sorted with local first.
+// every one holding something in the cache, sorted with local first.
 func (s *Store) Collections() ([]string, error) {
 	seen := map[string]bool{LocalCollection: true}
 	for name := range s.config.Collections {
 		seen[name] = true
 	}
-	entries, err := os.ReadDir(s.Root)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	rs, err := s.db.Query(`SELECT DISTINCT collection FROM objects`)
+	if err != nil {
 		return nil, err
 	}
-	for _, e := range entries {
-		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-			seen[e.Name()] = true
+	defer rs.Close()
+	for rs.Next() {
+		var name string
+		if err := rs.Scan(&name); err != nil {
+			return nil, err
 		}
+		seen[name] = true
+	}
+	if err := rs.Err(); err != nil {
+		return nil, err
 	}
 	var names []string
 	for n := range seen {
@@ -169,33 +175,4 @@ func (s *Store) Collections() ([]string, error) {
 	}
 	sort.Strings(names)
 	return append([]string{LocalCollection}, names...), nil
-}
-
-// migrateFlat moves project directories that sit directly under the root
-// (the layout before collections existed) into the local collection.
-func (s *Store) migrateFlat() error {
-	entries, err := os.ReadDir(s.Root)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		old := filepath.Join(s.Root, e.Name())
-		if _, err := os.Stat(filepath.Join(old, projectFile)); err != nil {
-			continue
-		}
-		local := s.CollectionDir(LocalCollection)
-		if err := os.MkdirAll(local, 0o755); err != nil {
-			return err
-		}
-		if err := os.Rename(old, filepath.Join(local, e.Name())); err != nil {
-			return fmt.Errorf("store: migrating %s into %s: %w", old, LocalCollection, err)
-		}
-	}
-	return nil
 }

@@ -31,17 +31,17 @@ const (
 	OriginHuman Origin = "human"
 )
 
-// Thread is one deferred item.  ID is the filename without extension and
-// is not stored in the file itself.
+// Thread is one deferred item.  It is stored as a JMAP Task; ID is the
+// Task's uid.  The Markdown-with-frontmatter form produced by Marshal is
+// how a thread is shown and edited, and how the old file store held it.
 type Thread struct {
 	ID string `yaml:"-"`
 
-	State      State      `yaml:"state"`
-	Created    time.Time  `yaml:"created"`
-	Session    string     `yaml:"session,omitempty"`
-	Transcript string     `yaml:"transcript,omitempty"`
-	Closed     *time.Time `yaml:"closed,omitempty"`
-	Origin     Origin     `yaml:"origin,omitempty"`
+	State   State      `yaml:"state"`
+	Created time.Time  `yaml:"created"`
+	Session string     `yaml:"session,omitempty"`
+	Closed  *time.Time `yaml:"closed,omitempty"`
+	Origin  Origin     `yaml:"origin,omitempty"`
 
 	// Body is everything after the frontmatter, with the closing delimiter's
 	// newline consumed.  Its first non-blank line is the title.

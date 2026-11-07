@@ -1,55 +1,45 @@
-// Package store manages the on-disk layout of Loose Threads: a root
-// directory holding collections, each holding one flat directory per
-// project, each with a project.yaml and one Markdown file per thread.
+// Package store is Loose Threads' local cache of JMAP Tasks: one SQLite
+// database holding every thread as a Task and every project as a
+// TaskList, grouped into collections, each of which may be synced with
+// an account on a JMAP for Tasks server.  Every command reads and writes
+// the cache and never waits on the network; sync is separate.  See the
+// JMAP storage section of DESIGN.md.
 package store
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
+	"github.com/rjbs/loosethreads/internal/patch"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
 
 // EnvRoot names the environment variable that overrides the store root.
 const EnvRoot = "LOOSETHREADS_HOME"
 
-const (
-	projectFile = "project.yaml"
-	threadExt   = ".md"
-)
+const cacheFile = "cache.sqlite"
 
 var ErrNotFound = errors.New("store: not found")
 
-// Store is a handle on one store root.  The root need not exist yet.
+// Store is a handle on one store root: its config.yaml and its cache.
 type Store struct {
 	Root   string
+	db     *sql.DB
 	config *Config
 }
 
-// Project is a project directory within the store.
+// Project is a project: a TaskList carrying the project id, within one
+// collection.
 type Project struct {
-	ID         string `yaml:"id"`
-	Name       string `yaml:"name,omitempty"`
-	Dir        string `yaml:"-"` // absolute path of the project directory
-	Collection string `yaml:"-"` // name of the collection holding it
-}
-
-// Mismatched reports whether the project's directory name disagrees with
-// the id in its project.yaml, which happens when files are relocated by
-// hand and the old project.yaml comes along.  The directory name is what
-// lookups use, so the id inside is the one that is wrong.
-func (p Project) Mismatched() bool {
-	return p.Dir != "" && filepath.Base(p.Dir) != DirName(p.ID)
+	ID         string
+	Name       string
+	Collection string
 }
 
 // DisplayName returns the project's name, or its id when it has none.
@@ -76,9 +66,8 @@ func DefaultRoot() (string, error) {
 	return filepath.Join(home, ".local", "share", "loosethreads"), nil
 }
 
-// Open returns a Store for root, or for DefaultRoot when root is empty.
-// It loads config.yaml and moves any project directories left over from
-// the pre-collection layout into the local collection.
+// Open returns a Store for root, or for DefaultRoot when root is empty,
+// creating the root and its cache if needed.
 func Open(root string) (*Store, error) {
 	if root == "" {
 		var err error
@@ -86,230 +75,136 @@ func Open(root string) (*Store, error) {
 			return nil, err
 		}
 	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
 	s := &Store{Root: root}
 	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
-	if err := s.migrateFlat(); err != nil {
+	db, err := openDB(filepath.Join(root, cacheFile))
+	if err != nil {
 		return nil, err
 	}
+	s.db = db
 	return s, nil
 }
 
-var slugJunk = regexp.MustCompile(`[^a-z0-9.]+`)
+// Close closes the cache.
+func (s *Store) Close() error { return s.db.Close() }
 
-// DirName returns the directory name for a project id: a lowercased,
-// hyphenated slug for humans, plus six hex digits of SHA-256 of the exact
-// id for uniqueness.
-func DirName(id string) string {
-	slug := strings.Trim(slugJunk.ReplaceAllString(strings.ToLower(id), "-"), "-")
-	sum := sha256.Sum256([]byte(id))
-	hash := hex.EncodeToString(sum[:3])
-	if slug == "" {
-		return hash
-	}
-	return slug + "-" + hash
+// projectLists returns the live TaskLists for a project id, in every
+// collection, oldest first.  Normally there is one.  Two machines that
+// start the same project offline each create a list for it; sync merges
+// them, and until then they read as one project.
+func projectLists(q queryer, id string) ([]*row, error) {
+	return queryRows(q, `type = ? AND project = ? AND local IS NOT NULL ORDER BY key`, typeTaskList, id)
 }
 
-// ProjectDir returns the directory a project with the given id has, or
-// would have, within the named collection.
-func (s *Store) ProjectDir(collection, id string) string {
-	return filepath.Join(s.CollectionDir(collection), DirName(id))
+func projectOf(lists []*row) *Project {
+	l := lists[0]
+	p := &Project{Collection: l.collection}
+	p.ID, _ = l.local[propProject].(string)
+	if name, _ := l.local["name"].(string); name != p.ID {
+		p.Name = name
+	}
+	return p
 }
 
-// RoutedDir returns the directory a new project with the given id would
-// be created in.
-func (s *Store) RoutedDir(id string) string {
-	return s.ProjectDir(s.config.Route(id), id)
-}
-
-// Project returns the project with the given id, creating its directory
-// and project.yaml in the routed collection if it exists nowhere.
-func (s *Store) Project(id string) (*Project, error) {
-	p, err := s.LookupProject(id)
-	if err == nil {
-		return p, nil
-	}
-	if !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-
-	collection := s.config.Route(id)
-	dir := s.ProjectDir(collection, id)
-	p = &Project{ID: id, Dir: dir, Collection: collection}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	if err := s.SaveProject(p); err != nil {
-		return nil, err
-	}
-	return p, nil
-}
-
-// LookupProject returns the project with the given id from whichever
-// collection holds it, or ErrNotFound.
+// LookupProject returns the project with the given id, or ErrNotFound.
 func (s *Store) LookupProject(id string) (*Project, error) {
-	names, err := s.Collections()
+	lists, err := projectLists(s.db, id)
 	if err != nil {
 		return nil, err
 	}
-	for _, c := range names {
-		p, err := readProject(s.ProjectDir(c, id))
-		if err == nil {
-			p.Collection = c
-			return p, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
+	if len(lists) == 0 {
+		return nil, fmt.Errorf("%w: project %q", ErrNotFound, id)
 	}
-	return nil, fmt.Errorf("%w: project %q", ErrNotFound, id)
+	return projectOf(lists), nil
 }
 
-// MoveProject relocates a project into another collection.
-func (s *Store) MoveProject(id, collection string) (*Project, error) {
-	p, err := s.LookupProject(id)
-	if err != nil {
-		return nil, err
+// Project returns the project with the given id, creating its TaskList
+// in the routed collection if it exists nowhere.
+func (s *Store) Project(id string) (*Project, error) {
+	if p, err := s.LookupProject(id); err == nil || !errors.Is(err, ErrNotFound) {
+		return p, err
 	}
-	if p.Collection == collection {
-		return p, nil
-	}
-	dest := s.ProjectDir(collection, id)
-	if _, err := os.Lstat(dest); err == nil {
-		return nil, fmt.Errorf("store: %s already exists", dest)
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(p.Dir, dest); err != nil {
-		return nil, err
-	}
-	p.Dir, p.Collection = dest, collection
-	return p, nil
-}
-
-// SaveProject writes project.yaml.
-func (s *Store) SaveProject(p *Project) error {
-	data, err := yaml.Marshal(p)
-	if err != nil {
+	collection := s.config.Route(id)
+	err := s.tx(func(tx *sql.Tx) error {
+		_, err := newList(tx, collection, id, id)
 		return err
-	}
-	return writeAtomic(filepath.Join(p.Dir, projectFile), data)
-}
-
-func readProject(dir string) (*Project, error) {
-	data, err := os.ReadFile(filepath.Join(dir, projectFile))
+	})
 	if err != nil {
 		return nil, err
 	}
-	var p Project
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		return nil, fmt.Errorf("store: %s: %w", filepath.Join(dir, projectFile), err)
-	}
-	if p.ID == "" {
-		return nil, fmt.Errorf("store: %s: missing id", filepath.Join(dir, projectFile))
-	}
-	p.Dir = dir
-	return &p, nil
+	return s.LookupProject(id)
 }
 
-// Projects lists every project in every collection, sorted by display
-// name.  Directories without a project.yaml are ignored.
+// ProjectIn returns the project with the given id, creating it in the
+// named collection, with the given display name, if it exists nowhere.
+// It is for importing; ordinary creation goes by the routing rules.
+func (s *Store) ProjectIn(id, name, collection string) (*Project, error) {
+	if p, err := s.LookupProject(id); err == nil || !errors.Is(err, ErrNotFound) {
+		return p, err
+	}
+	if name == "" {
+		name = id
+	}
+	err := s.tx(func(tx *sql.Tx) error {
+		_, err := newList(tx, collection, id, name)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.LookupProject(id)
+}
+
+func newList(tx *sql.Tx, collection, id, name string) (*row, error) {
+	r := &row{collection: collection, typ: typeTaskList}
+	return r, setLocal(tx, r, patch.Object{"name": name, propProject: id})
+}
+
+// Projects lists every project, sorted by display name.
 func (s *Store) Projects() ([]*Project, error) {
-	names, err := s.Collections()
+	lists, err := queryRows(s.db, `type = ? AND project IS NOT NULL AND local IS NOT NULL ORDER BY key`, typeTaskList)
 	if err != nil {
 		return nil, err
+	}
+	byID := map[string][]*row{}
+	var ids []string
+	for _, l := range lists {
+		id := l.local[propProject].(string)
+		if byID[id] == nil {
+			ids = append(ids, id)
+		}
+		byID[id] = append(byID[id], l)
 	}
 	var ps []*Project
-	for _, c := range names {
-		entries, err := os.ReadDir(s.CollectionDir(c))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			p, err := readProject(filepath.Join(s.CollectionDir(c), e.Name()))
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			if err != nil {
-				return nil, err
-			}
-			p.Collection = c
-			ps = append(ps, p)
-		}
+	for _, id := range ids {
+		ps = append(ps, projectOf(byID[id]))
 	}
-	sort.Slice(ps, func(i, j int) bool {
-		return ps[i].DisplayName() < ps[j].DisplayName()
-	})
+	sort.Slice(ps, func(i, j int) bool { return ps[i].DisplayName() < ps[j].DisplayName() })
 	return ps, nil
 }
 
-// View is the JSON shape of a thread as seen by the CLI's --json output
-// and the MCP server, so the two agree.
-type View struct {
-	ID         string     `json:"id"`
-	Project    string     `json:"project"`
-	Path       string     `json:"path"`
-	State      string     `json:"state"`
-	Title      string     `json:"title"`
-	Body       string     `json:"body"`
-	Created    time.Time  `json:"created"`
-	Closed     *time.Time `json:"closed,omitempty"`
-	Session    string     `json:"session,omitempty"`
-	Transcript string     `json:"transcript,omitempty"`
-	Origin     string     `json:"origin,omitempty"`
-}
-
-// View builds the View of t within p.
-func (s *Store) View(p *Project, t *thread.Thread) View {
-	return View{
-		ID:         t.ID,
-		Project:    p.ID,
-		Path:       s.ThreadPath(p, t.ID),
-		State:      string(t.State),
-		Title:      t.Title(),
-		Body:       t.Body,
-		Created:    t.Created,
-		Closed:     t.Closed,
-		Session:    t.Session,
-		Transcript: t.Transcript,
-		Origin:     string(t.Origin),
-	}
-}
-
-// ThreadPath returns the file path for a thread id within p.
-func (s *Store) ThreadPath(p *Project, id string) string {
-	return filepath.Join(p.Dir, id+threadExt)
+// taskRows returns the live Tasks in a project, in any of its lists.
+func taskRows(q queryer, projectID string) ([]*row, error) {
+	return queryRows(q, `type = ? AND local IS NOT NULL AND list_key IN
+		(SELECT key FROM objects WHERE type = ? AND project = ? AND local IS NOT NULL)`,
+		typeTask, typeTaskList, projectID)
 }
 
 // Threads lists every thread in p, oldest first by creation time, with id
-// as the tiebreaker.  Ids alone carry only the date, so same-day threads
-// would otherwise sort by their random suffix.  Files that fail to parse are returned in errs rather
-// than aborting the listing, so one bad hand edit does not hide the rest.
-func (s *Store) Threads(p *Project) (threads []*thread.Thread, errs []error, err error) {
-	entries, err := os.ReadDir(p.Dir)
+// as the tiebreaker.
+func (s *Store) Threads(p *Project) ([]*thread.Thread, error) {
+	rows, err := taskRows(s.db, p.ID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, threadExt) {
-			continue
-		}
-		id := strings.TrimSuffix(name, threadExt)
-		t, err := s.Get(p, id)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		threads = append(threads, t)
+	threads := make([]*thread.Thread, 0, len(rows))
+	for _, r := range rows {
+		threads = append(threads, threadFromTask(r.local))
 	}
 	sort.Slice(threads, func(i, j int) bool {
 		a, b := threads[i], threads[j]
@@ -318,29 +213,30 @@ func (s *Store) Threads(p *Project) (threads []*thread.Thread, errs []error, err
 		}
 		return a.ID < b.ID
 	})
-	return threads, errs, nil
+	return threads, nil
 }
 
-// Get reads one thread.
-func (s *Store) Get(p *Project, id string) (*thread.Thread, error) {
-	path := s.ThreadPath(p, id)
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
+func taskRow(q queryer, p *Project, id string) (*row, error) {
+	r, err := queryRow(q, `type = ? AND uid = ? AND local IS NOT NULL AND list_key IN
+		(SELECT key FROM objects WHERE type = ? AND project = ? AND local IS NOT NULL)`,
+		typeTask, id, typeTaskList, p.ID)
+	if errors.Is(err, ErrNotFound) {
 		return nil, fmt.Errorf("%w: thread %q", ErrNotFound, id)
 	}
+	return r, err
+}
+
+// Get reads one thread by its exact id.
+func (s *Store) Get(p *Project, id string) (*thread.Thread, error) {
+	r, err := taskRow(s.db, p, id)
 	if err != nil {
 		return nil, err
 	}
-	t, err := thread.Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	t.ID = id
-	return t, nil
+	return threadFromTask(r.local), nil
 }
 
 // Resolve finds a thread in p by exact id, or by a unique suffix of its
-// id, so that the four random characters suffice when they are distinct.
+// id, so that the random characters suffice when they are distinct.
 func (s *Store) Resolve(p *Project, ref string) (*thread.Thread, error) {
 	if t, err := s.Get(p, ref); err == nil {
 		return t, nil
@@ -348,7 +244,7 @@ func (s *Store) Resolve(p *Project, ref string) (*thread.Thread, error) {
 		return nil, err
 	}
 
-	ths, _, err := s.Threads(p)
+	ths, err := s.Threads(p)
 	if err != nil {
 		return nil, err
 	}
@@ -371,60 +267,162 @@ func (s *Store) Resolve(p *Project, ref string) (*thread.Thread, error) {
 	return nil, fmt.Errorf("%q is ambiguous: %s", ref, strings.Join(ids, ", "))
 }
 
-// Create assigns t a fresh id and writes it into p.  It retries on the
-// unlikely id collision.
+// primaryList returns the list new threads in a project go into: the
+// oldest live one.
+func primaryList(q queryer, p *Project) (*row, error) {
+	lists, err := projectLists(q, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(lists) == 0 {
+		return nil, fmt.Errorf("%w: project %q", ErrNotFound, p.ID)
+	}
+	return lists[0], nil
+}
+
+// Create assigns t a fresh id, unless it already has one, and records it
+// in p.  It retries on the unlikely id collision.
 func (s *Store) Create(p *Project, t *thread.Thread, now time.Time) error {
 	if t.Created.IsZero() {
 		t.Created = now
 	}
-	for range 10 {
-		id := thread.NewID(now)
-		path := s.ThreadPath(p, id)
-		if _, err := os.Lstat(path); err == nil {
-			continue
+	return s.tx(func(tx *sql.Tx) error {
+		list, err := primaryList(tx, p)
+		if err != nil {
+			return err
 		}
-		t.ID = id
-		return s.Save(p, t)
-	}
-	return errors.New("store: could not find an unused thread id")
+		if t.ID == "" {
+			for range 10 {
+				id := thread.NewID(now)
+				if _, err := queryRow(tx, `uid = ? AND collection = ?`, id, list.collection); errors.Is(err, ErrNotFound) {
+					t.ID = id
+					break
+				}
+			}
+			if t.ID == "" {
+				return errors.New("store: could not find an unused thread id")
+			}
+		}
+		task, err := applyThread(nil, t)
+		if err != nil {
+			return err
+		}
+		fileUnder(task, list)
+		r := &row{collection: list.collection, typ: typeTask, listKey: list.key}
+		return setLocal(tx, r, task)
+	})
 }
 
-// Save writes t to its file in p, atomically.
+// Save records changes to t, which must already exist in p.
 func (s *Store) Save(p *Project, t *thread.Thread) error {
 	if t.ID == "" {
 		return errors.New("store: cannot save a thread without an id")
 	}
-	data, err := t.Marshal()
-	if err != nil {
-		return err
-	}
-	return writeAtomic(s.ThreadPath(p, t.ID), data)
+	return s.tx(func(tx *sql.Tx) error {
+		r, err := taskRow(tx, p, t.ID)
+		if err != nil {
+			return err
+		}
+		task, err := applyThread(r.local, t)
+		if err != nil {
+			return err
+		}
+		return setLocal(tx, r, task)
+	})
 }
 
-// Move relocates the thread with id from one project to another, by
-// renaming its file.  It refuses if the destination already holds a
-// thread with that id.
+// Move relocates the thread with id from one project to another.
 func (s *Store) Move(from, to *Project, id string) error {
-	if from.Dir == to.Dir {
+	if from.ID == to.ID {
 		return fmt.Errorf("store: thread %s is already in %s", id, to.ID)
 	}
-	src := s.ThreadPath(from, id)
-	if _, err := os.Lstat(src); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%w: thread %q", ErrNotFound, id)
-	} else if err != nil {
-		return err
-	}
-	dst := s.ThreadPath(to, id)
-	if _, err := os.Lstat(dst); err == nil {
-		return fmt.Errorf("store: thread %s already exists in %s", id, to.ID)
-	}
-	return os.Rename(src, dst)
+	return s.tx(func(tx *sql.Tx) error {
+		r, err := taskRow(tx, from, id)
+		if err != nil {
+			return err
+		}
+		list, err := primaryList(tx, to)
+		if err != nil {
+			return err
+		}
+		if _, err := taskRow(tx, to, id); err == nil {
+			return fmt.Errorf("store: thread %s already exists in %s", id, to.ID)
+		}
+		return moveTask(tx, r, list)
+	})
 }
 
-// Rehome moves every thread file from the project fromID into the project
+// moveTask puts the Task in r into list.  Within one collection that is a
+// change of taskListIds.  Between collections, which are different JMAP
+// accounts, the Task is created anew in the list's collection and
+// destroyed in its old one; its uid carries its identity across.
+func moveTask(tx *sql.Tx, r *row, list *row) error {
+	task := patch.Clone(r.local)
+	fileUnder(task, list)
+	if r.collection == list.collection {
+		r.listKey = list.key
+		return setLocal(tx, r, task)
+	}
+	delete(task, "id")
+	moved := &row{collection: list.collection, typ: typeTask, listKey: list.key}
+	if err := setLocal(tx, moved, task); err != nil {
+		return err
+	}
+	return setLocal(tx, r, nil)
+}
+
+// MoveProject relocates a project into another collection.
+func (s *Store) MoveProject(id, collection string) (*Project, error) {
+	err := s.tx(func(tx *sql.Tx) error {
+		lists, err := projectLists(tx, id)
+		if err != nil {
+			return err
+		}
+		if len(lists) == 0 {
+			return fmt.Errorf("%w: project %q", ErrNotFound, id)
+		}
+		if lists[0].collection == collection {
+			return nil
+		}
+		name, _ := lists[0].local["name"].(string)
+		dest, err := newList(tx, collection, id, name)
+		if err != nil {
+			return err
+		}
+		return absorb(tx, lists, dest)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.LookupProject(id)
+}
+
+// absorb moves every Task in lists into dest and destroys the lists.
+func absorb(tx *sql.Tx, lists []*row, dest *row) error {
+	for _, l := range lists {
+		if l.key == dest.key {
+			continue
+		}
+		tasks, err := queryRows(tx, `type = ? AND list_key = ? AND local IS NOT NULL`, typeTask, l.key)
+		if err != nil {
+			return err
+		}
+		for _, t := range tasks {
+			if err := moveTask(tx, t, dest); err != nil {
+				return err
+			}
+		}
+		if err := setLocal(tx, l, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Rehome moves every thread from the project fromID into the project
 // toID, creating the destination if needed, and removes the source
-// directory once it is empty.  It refuses to move anything if any thread
-// id already exists in the destination.  It returns the ids moved.
+// project.  It refuses to move anything if any thread id already exists
+// in the destination.  It returns the ids moved.
 func (s *Store) Rehome(fromID, toID string) ([]string, error) {
 	if fromID == toID {
 		return nil, fmt.Errorf("store: source and destination are the same project")
@@ -433,67 +431,66 @@ func (s *Store) Rehome(fromID, toID string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(from.Dir)
+	ths, err := s.Threads(from)
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), threadExt) {
-			ids = append(ids, strings.TrimSuffix(e.Name(), threadExt))
-		}
-	}
-	if len(ids) == 0 {
+	if len(ths) == 0 {
 		return nil, nil
 	}
-
 	to, err := s.Project(toID)
 	if err != nil {
 		return nil, err
 	}
-	for _, id := range ids {
-		if _, err := os.Lstat(s.ThreadPath(to, id)); err == nil {
-			return nil, fmt.Errorf("store: thread %s already exists in %s; nothing moved", id, toID)
+	var ids []string
+	err = s.tx(func(tx *sql.Tx) error {
+		for _, t := range ths {
+			if _, err := taskRow(tx, to, t.ID); err == nil {
+				return fmt.Errorf("store: thread %s already exists in %s; nothing moved", t.ID, toID)
+			}
+			ids = append(ids, t.ID)
 		}
-	}
-	for _, id := range ids {
-		if err := os.Rename(s.ThreadPath(from, id), s.ThreadPath(to, id)); err != nil {
-			return nil, err
+		lists, err := projectLists(tx, fromID)
+		if err != nil {
+			return err
 		}
-	}
-
-	// Leave the source directory alone if it holds anything we do not
-	// understand; otherwise clear it away.
-	if err := os.Remove(filepath.Join(from.Dir, projectFile)); err != nil {
-		return ids, err
-	}
-	if err := os.Remove(from.Dir); err != nil {
-		return ids, fmt.Errorf("moved %d threads, but could not remove %s: %w", len(ids), from.Dir, err)
+		dest, err := primaryList(tx, to)
+		if err != nil {
+			return err
+		}
+		return absorb(tx, lists, dest)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return ids, nil
 }
 
-// writeAtomic writes data to a temporary file beside path and renames it
-// into place, so readers never see a partial file.
-func writeAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+// View is the JSON shape of a thread as seen by the CLI's --json output
+// and the MCP server, so the two agree.
+type View struct {
+	ID      string     `json:"id"`
+	Project string     `json:"project"`
+	State   string     `json:"state"`
+	Title   string     `json:"title"`
+	Body    string     `json:"body"`
+	Created time.Time  `json:"created"`
+	Closed  *time.Time `json:"closed,omitempty"`
+	Session string     `json:"session,omitempty"`
+	Origin  string     `json:"origin,omitempty"`
+}
 
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
+// View builds the View of t within p.
+func (s *Store) View(p *Project, t *thread.Thread) View {
+	return View{
+		ID:      t.ID,
+		Project: p.ID,
+		State:   string(t.State),
+		Title:   t.Title(),
+		Body:    t.Body,
+		Created: t.Created,
+		Closed:  t.Closed,
+		Session: t.Session,
+		Origin:  string(t.Origin),
 	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
 }

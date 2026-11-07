@@ -35,7 +35,6 @@ func runAdd(args []string) error {
 	fs := newFlagSet("add", "TITLE")
 	projectID := fs.String("project", "", "project id (default: derived from the working directory)")
 	session := fs.String("session", defaultSession(), "session id to record")
-	transcript := fs.String("transcript", "", "transcript path to record")
 	origin := fs.String("origin", string(defaultOrigin()), "who is adding this: agent or human")
 	body := fs.String("body", "", "body text; if absent and stdin is not a terminal, stdin is read")
 	pos, err := parse(fs, args)
@@ -77,18 +76,17 @@ func runAdd(args []string) error {
 		full += "\n" + text + "\n"
 	}
 	t := &thread.Thread{
-		State:      thread.Open,
-		Created:    now(),
-		Session:    *session,
-		Transcript: *transcript,
-		Origin:     thread.Origin(*origin),
-		Body:       full,
+		State:   thread.Open,
+		Created: now(),
+		Session: *session,
+		Origin:  thread.Origin(*origin),
+		Body:    full,
 	}
 	if err := c.store.Create(c.project, t, t.Created); err != nil {
 		return err
 	}
 	fmt.Println(t.ID)
-	pushInBackground(c.store, c.project)
+	syncInBackground(c.store, c.project)
 	return nil
 }
 
@@ -151,16 +149,10 @@ func runList(args []string) error {
 
 	var views []store.View
 	for _, p := range projects {
-		if p.Mismatched() {
-			fmt.Fprintf(os.Stderr, "warning: %s is named for another project but its project.yaml says %q\n", p.Dir, p.ID)
-		}
 		c := &workspace{store: s, project: p}
-		ths, errs, err := s.Threads(p)
+		ths, err := s.Threads(p)
 		if err != nil {
 			return err
-		}
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "warning: %v\n", e)
 		}
 		for _, t := range ths {
 			if !*allStates && !t.IsOpen() {
@@ -269,7 +261,7 @@ func stateCommand(target thread.State) func([]string) error {
 			}
 			fmt.Printf("%s: %s  %s\n", t.ID, t.State, t.Title())
 		}
-		pushInBackground(c.store, c.project)
+		syncInBackground(c.store, c.project)
 		return nil
 	}
 }
@@ -314,7 +306,7 @@ func runAppend(args []string) error {
 		return err
 	}
 	fmt.Printf("%s: appended  %s\n", t.ID, t.Title())
-	pushInBackground(c.store, c.project)
+	syncInBackground(c.store, c.project)
 	return nil
 }
 
@@ -338,18 +330,43 @@ func runEdit(args []string) error {
 	if err != nil {
 		return err
 	}
-	path := c.store.ThreadPath(c.project, t.ID)
 	if !stdinIsTerminal() || !stdoutIsTerminal() {
 		// An editor started without a terminal does not fail; vim, for
 		// one, waits forever on its non-terminal stdin, and so would we.
 		// -- claude, 2026-09-08
-		return fmt.Errorf("edit needs a terminal; to add to the thread without one, use lt append, or edit the file directly:\n  %s", path)
+		return fmt.Errorf("edit needs a terminal; to add to the thread without one, use lt append")
 	}
-	if err := editFile(path); err != nil {
+	changed, err := editThread(c.store, c.project, t)
+	if err != nil {
 		return err
 	}
-	pushInBackground(c.store, c.project)
+	if changed {
+		fmt.Printf("%s: saved  %s\n", t.ID, t.Title())
+		syncInBackground(c.store, c.project)
+	}
 	return nil
+}
+
+// editThread opens t in the editor by way of a temporary file and saves
+// whatever comes back, reporting whether anything changed.
+func editThread(s *store.Store, p *store.Project, t *thread.Thread) (bool, error) {
+	sess, err := editor.Start(t)
+	if err != nil {
+		return false, err
+	}
+	if err := editFile(sess.Path); err != nil {
+		os.Remove(sess.Path)
+		return false, err
+	}
+	edited, err := sess.Finish()
+	if err != nil || edited == nil {
+		return false, err
+	}
+	if err := s.Save(p, edited); err != nil {
+		return false, err
+	}
+	*t = *edited
+	return true, nil
 }
 
 func editFile(path string) error {

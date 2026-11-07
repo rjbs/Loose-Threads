@@ -1,0 +1,260 @@
+// Package jmap is a minimal JMAP client: fetch the Session, then send
+// method calls to the API endpoint.  It knows nothing about any data type;
+// the sync engine in package store builds the calls.
+package jmap
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+)
+
+// Capabilities this client uses.
+const (
+	CoreCapability  = "urn:ietf:params:jmap:core"
+	TasksCapability = "urn:ietf:params:jmap:tasks"
+)
+
+// Client talks to one JMAP server.
+type Client struct {
+	HTTP     *http.Client
+	APIURL   string
+	Accounts map[string]Account
+
+	// Token, if set, is sent as a bearer token with every request.
+	Token string
+
+	// Limits from the Session's core capability.  Callers keep requests
+	// within them; Chunks helps.
+	MaxCallsInRequest int
+	MaxObjectsInGet   int
+	MaxObjectsInSet   int
+}
+
+// Account is an entry in the Session's accounts.
+type Account struct {
+	Name       string `json:"name"`
+	IsReadOnly bool   `json:"isReadOnly"`
+}
+
+// Open fetches the Session resource at sessionURL, presenting token, if
+// it is not empty, as a bearer token.
+func Open(ctx context.Context, sessionURL, token string) (*Client, error) {
+	c := &Client{HTTP: http.DefaultClient, Token: token}
+	req, err := http.NewRequestWithContext(ctx, "GET", sessionURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.send(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("jmap: session %s: %s: %s", sessionURL, resp.Status, bytes.TrimSpace(body))
+	}
+	var session struct {
+		APIURL       string             `json:"apiUrl"`
+		Accounts     map[string]Account `json:"accounts"`
+		Capabilities map[string]struct {
+			MaxCallsInRequest int `json:"maxCallsInRequest"`
+			MaxObjectsInGet   int `json:"maxObjectsInGet"`
+			MaxObjectsInSet   int `json:"maxObjectsInSet"`
+		} `json:"capabilities"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
+		return nil, fmt.Errorf("jmap: decoding session: %w", err)
+	}
+	base, err := url.Parse(sessionURL)
+	if err != nil {
+		return nil, err
+	}
+	api, err := base.Parse(session.APIURL)
+	if err != nil {
+		return nil, fmt.Errorf("jmap: bad apiUrl %q: %w", session.APIURL, err)
+	}
+	c.APIURL, c.Accounts = api.String(), session.Accounts
+	core := session.Capabilities[CoreCapability]
+	// RFC 8620 gives these suggested minimums, which serve as defaults for
+	// a server that does not say.
+	c.MaxCallsInRequest = orDefault(core.MaxCallsInRequest, 16)
+	c.MaxObjectsInGet = orDefault(core.MaxObjectsInGet, 500)
+	c.MaxObjectsInSet = orDefault(core.MaxObjectsInSet, 500)
+	return c, nil
+}
+
+func orDefault(n, def int) int {
+	if n > 0 {
+		return n
+	}
+	return def
+}
+
+// Chunks splits n items into consecutive [start, end) ranges of at most
+// size each.
+func Chunks(n, size int) [][2]int {
+	var out [][2]int
+	for start := 0; start < n; start += size {
+		out = append(out, [2]int{start, min(start+size, n)})
+	}
+	return out
+}
+
+// Call is one method call.  ID is its call id, which the response
+// carries back.
+type Call struct {
+	Name string
+	Args map[string]any
+	ID   string
+}
+
+func (c Call) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]any{c.Name, c.Args, c.ID})
+}
+
+// Response is one method response.  A method-level error has Name
+// "error"; MethodError extracts it.
+type Response struct {
+	Name string
+	Args map[string]any
+	ID   string
+}
+
+func (r *Response) UnmarshalJSON(data []byte) error {
+	var parts []json.RawMessage
+	if err := json.Unmarshal(data, &parts); err != nil {
+		return err
+	}
+	if len(parts) != 3 {
+		return fmt.Errorf("jmap: invocation with %d parts", len(parts))
+	}
+	if err := json.Unmarshal(parts[0], &r.Name); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(parts[1], &r.Args); err != nil {
+		return err
+	}
+	return json.Unmarshal(parts[2], &r.ID)
+}
+
+// MethodError is a method-level error response.
+type MethodError struct {
+	Type        string
+	Description string
+}
+
+func (e *MethodError) Error() string {
+	if e.Description != "" {
+		return e.Type + ": " + e.Description
+	}
+	return e.Type
+}
+
+// Err returns the method error this response carries, or nil.
+func (r Response) Err() *MethodError {
+	if r.Name != "error" {
+		return nil
+	}
+	e := &MethodError{}
+	e.Type, _ = r.Args["type"].(string)
+	e.Description, _ = r.Args["description"].(string)
+	return e
+}
+
+// Do sends the calls in one request and returns the responses, in order.
+func (c *Client) Do(ctx context.Context, calls ...Call) ([]Response, error) {
+	body, err := json.Marshal(map[string]any{
+		"using":       []string{CoreCapability, TasksCapability},
+		"methodCalls": calls,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.APIURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.send(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("jmap: %s: %s", resp.Status, bytes.TrimSpace(b))
+	}
+	var out struct {
+		MethodResponses []Response `json:"methodResponses"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("jmap: decoding response: %w", err)
+	}
+	return out.MethodResponses, nil
+}
+
+// Batch sends groups of calls in as few requests as maxCallsInRequest
+// allows, and returns the responses in order.  A group is never split
+// across requests, so calls within one may refer to each other's
+// results.
+func (c *Client) Batch(ctx context.Context, groups ...[]Call) ([]Response, error) {
+	var out []Response
+	var calls []Call
+	flush := func() error {
+		if len(calls) == 0 {
+			return nil
+		}
+		rs, err := c.Do(ctx, calls...)
+		if err != nil {
+			return err
+		}
+		if len(rs) != len(calls) {
+			return fmt.Errorf("jmap: %d calls, but %d responses", len(calls), len(rs))
+		}
+		out, calls = append(out, rs...), nil
+		return nil
+	}
+	for _, g := range groups {
+		if len(g) > c.MaxCallsInRequest {
+			return nil, fmt.Errorf("jmap: %d related calls, but the server allows only %d in a request", len(g), c.MaxCallsInRequest)
+		}
+		if len(calls)+len(g) > c.MaxCallsInRequest {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
+		calls = append(calls, g...)
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) send(req *http.Request) (*http.Response, error) {
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	return c.HTTP.Do(req)
+}
+
+// One sends a single call and returns its response's arguments, turning
+// a method-level error into a Go error.
+func (c *Client) One(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
+	rs, err := c.Do(ctx, Call{Name: name, Args: args, ID: "0"})
+	if err != nil {
+		return nil, err
+	}
+	if len(rs) != 1 {
+		return nil, fmt.Errorf("jmap: %s: %d responses", name, len(rs))
+	}
+	if e := rs[0].Err(); e != nil {
+		return nil, e
+	}
+	return rs[0].Args, nil
+}

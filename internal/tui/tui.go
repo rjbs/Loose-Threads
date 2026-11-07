@@ -4,11 +4,8 @@
 package tui
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -21,7 +18,6 @@ import (
 	"github.com/rjbs/loosethreads/internal/editor"
 	"github.com/rjbs/loosethreads/internal/project"
 	"github.com/rjbs/loosethreads/internal/store"
-	ltsync "github.com/rjbs/loosethreads/internal/sync"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
 
@@ -57,9 +53,20 @@ type Model struct {
 	// transition; a hard refresh (or closing it here) clears it.
 	sticky map[string]bool
 
-	// fingerprint summarizes the store directories as last seen by the
-	// poller, so that a change on disk triggers a reload.
-	fingerprint string
+	// generation is the store's change counter as of the last load, so
+	// that a change by any process triggers a reload.
+	generation int64
+
+	// syncTrouble names the collections whose syncing has problems, for
+	// the footer, or is empty.
+	syncTrouble string
+
+	// sync, if set, starts a background sync of the named collection, or
+	// of every collection when the name is empty.
+	sync func(collection string)
+
+	// editing is the edit in progress in the external editor, if any.
+	editing *editor.Session
 
 	list  list.Model // threads of the current project
 	plist list.Model // project picker
@@ -76,10 +83,13 @@ type Model struct {
 // SetTheme changes the theme.  Call before Run.
 func (m *Model) SetTheme(t Theme) { m.theme = t }
 
+// SetSync gives the browser a way to start a background sync of one
+// collection, or of all when the name is empty.  Call before Run.
+func (m *Model) SetSync(f func(collection string)) { m.sync = f }
+
 // New builds a Model over s, starting on the project with id start.  If
-// that project has no directory in the store yet it is shown anyway, so
-// that browsing from a fresh checkout works; its directory is created on
-// the first add.  An empty start selects the first project.
+// that project is not in the store yet it is shown anyway, so that
+// browsing from a fresh checkout works; it is created on the first add.  An empty start selects the first project.
 func New(s *store.Store, start string) (*Model, error) {
 	m := &Model{store: s, now: time.Now, sticky: map[string]bool{}}
 	m.theme, _ = LookupTheme(DefaultTheme)
@@ -116,20 +126,15 @@ func (m *Model) loadProjects(keep string) error {
 	}
 	m.cur = 0
 	if keep != "" {
-		// Match by id, in whatever collection the project lives.  Failing
-		// that, match by the directory a new project with this id would
-		// get: a directory whose project.yaml carries the wrong id is
-		// still the one lookups would use, and must not be listed twice.
-		dir := m.store.RoutedDir(keep)
 		found := false
 		for i, p := range ps {
-			if p.ID == keep || p.Dir == dir {
+			if p.ID == keep {
 				m.cur, found = i, true
 				break
 			}
 		}
 		if !found {
-			ps = append(ps, &store.Project{ID: keep, Dir: dir, Collection: m.store.Config().Route(keep)})
+			ps = append(ps, &store.Project{ID: keep, Collection: m.store.Config().Route(keep)})
 			m.cur = len(ps) - 1
 		}
 	}
@@ -171,12 +176,9 @@ func (m *Model) loadThreads() error {
 		selected = it.t.ID
 	}
 
-	ths, errs, err := m.store.Threads(p)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	ths, err := m.store.Threads(p)
+	if err != nil {
 		return err
-	}
-	if len(errs) > 0 {
-		m.status = fmt.Sprintf("%d unreadable thread file(s) skipped", len(errs))
 	}
 	m.threads = ths
 
@@ -197,7 +199,8 @@ func (m *Model) loadThreads() error {
 	} else if m.list.Index() >= len(visible) && len(visible) > 0 {
 		m.list.Select(len(visible) - 1)
 	}
-	m.fingerprint = m.currentFingerprint()
+	m.generation, _ = m.store.Generation()
+	m.syncTrouble = syncTrouble(m.store)
 	m.layout()
 	return nil
 }
@@ -268,77 +271,56 @@ func (m *Model) openCurrent() int {
 	return n
 }
 
-// Polling.  A tick every pollInterval compares a fingerprint of the store
-// root and the current project directory with the last one seen; any
-// difference reloads.  Writes land by rename, which always updates the
-// directory's mtime, so listing names, sizes, and mtimes catches every
-// change without watching individual files.
+// Polling.  A tick every pollInterval compares the store's generation, a
+// counter every write to the cache bumps, with the one last loaded; any
+// difference reloads.  Every syncInterval the browser starts a background
+// sync, and the poll notices whatever it brings.
 
-const pollInterval = time.Second
+const (
+	pollInterval = time.Second
+	syncInterval = 60 * time.Second
+)
 
 type tickMsg struct{}
+type syncTickMsg struct{}
 
 func tick() tea.Cmd {
 	return tea.Tick(pollInterval, func(time.Time) tea.Msg { return tickMsg{} })
-}
-
-// Sync.  Every syncInterval the browser syncs collections with remotes in
-// the background; the poll then notices whatever arrived.
-
-const syncInterval = 60 * time.Second
-
-type syncTickMsg struct{}
-type syncDoneMsg struct {
-	results  []ltsync.Result
-	err      error
-	periodic bool // from the interval timer, so schedule the next one
 }
 
 func syncTick() tea.Cmd {
 	return tea.Tick(syncInterval, func(time.Time) tea.Msg { return syncTickMsg{} })
 }
 
-func (m *Model) syncNow() tea.Cmd {
-	s := m.store
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		results, err := ltsync.All(ctx, s)
-		return syncDoneMsg{results, err, true}
+func (m *Model) syncAll() {
+	if m.sync != nil {
+		m.sync("")
 	}
 }
 
-func (m *Model) currentFingerprint() string {
-	var b strings.Builder
-	dirs := []string{m.store.Root}
-	if names, err := m.store.Collections(); err == nil {
-		for _, c := range names {
-			dirs = append(dirs, m.store.CollectionDir(c))
+// syncTrouble summarizes, in a few words, which collections have sync
+// problems.  Every sync records its outcome, which changes the store's
+// generation, so this is recomputed whenever the browser reloads.
+func syncTrouble(s *store.Store) string {
+	sts, err := s.SyncStatuses()
+	if err != nil {
+		return "sync status unreadable: " + err.Error()
+	}
+	var names []string
+	for _, st := range sts {
+		if len(st.Problems(time.Now())) > 0 {
+			names = append(names, st.Collection)
 		}
 	}
-	if p := m.project(); p != nil {
-		dirs = append(dirs, p.Dir)
+	if len(names) == 0 {
+		return ""
 	}
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			fmt.Fprintf(&b, "%s: %v\n", dir, err)
-			continue
-		}
-		for _, e := range entries {
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(&b, "%s %d %d\n", e.Name(), info.Size(), info.ModTime().UnixNano())
-		}
-	}
-	return b.String()
+	return "sync problems: " + strings.Join(names, ", ") + " (lt sync -status)"
 }
 
-// poll reloads if the store has changed on disk since the last load.
+// poll reloads if the store has changed since the last load.
 func (m *Model) poll() {
-	if m.currentFingerprint() == m.fingerprint {
+	if g, err := m.store.Generation(); err == nil && g == m.generation {
 		return
 	}
 	keep := ""
@@ -368,7 +350,10 @@ func (m *Model) selected() *thread.Thread {
 }
 
 // Init implements tea.Model.
-func (m *Model) Init() tea.Cmd { return tea.Batch(tick(), m.syncNow()) }
+func (m *Model) Init() tea.Cmd {
+	m.syncAll()
+	return tea.Batch(tick(), syncTick())
+}
 
 type editorDoneMsg struct{ err error }
 
@@ -380,33 +365,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.layout()
 		return m, nil
 	case editorDoneMsg:
-		if msg.err != nil {
-			m.err = fmt.Errorf("editor: %w", msg.err)
-		}
-		m.err = m.loadThreads()
-		return m, m.pushLater()
+		m.finishEdit(msg.err)
+		return m, nil
 	case tickMsg:
 		m.poll()
 		return m, tick()
 	case list.FilterMatchesMsg:
 		return m, nil // see "Filtering" above
 	case syncTickMsg:
-		return m, m.syncNow()
-	case syncDoneMsg:
-		for _, r := range msg.results {
-			if len(r.Conflicts) > 0 {
-				m.err = fmt.Errorf("sync: %s", r)
-			} else if r.Merged {
-				m.status = r.String()
-			}
-		}
-		if msg.err != nil && !errors.Is(msg.err, ltsync.ErrConflict) {
-			m.status = "sync failed: " + msg.err.Error()
-		}
-		if msg.periodic {
-			return m, syncTick()
-		}
-		return m, nil
+		m.syncAll()
+		return m, syncTick()
 	case tea.KeyMsg:
 		m.status = ""
 		m.err = nil
@@ -541,39 +509,64 @@ func (m *Model) toggleState(target thread.State, note string) tea.Cmd {
 	}
 	m.status = fmt.Sprintf("%s: %s", t.ID, t.State)
 	m.err = m.loadThreads()
-	return m.pushLater()
+	m.pushLater()
+	return nil
 }
 
-// pushLater syncs the current project's collection in the background if
-// it has a remote, so browser edits reach the remote like CLI ones do.
-func (m *Model) pushLater() tea.Cmd {
-	p := m.project()
-	if p == nil {
-		return nil
-	}
-	return m.pushCollection(p.Collection)
-}
-
-// pushCollection syncs the named collection in the background, if it has
-// a remote.
-func (m *Model) pushCollection(name string) tea.Cmd {
-	if m.store.Config().Remote(name) == "" {
-		return nil
-	}
-	s := m.store
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-		defer cancel()
-		r, err := ltsync.Collection(ctx, s, name)
-		return syncDoneMsg{[]ltsync.Result{r}, err, false}
+// pushLater syncs the current project's collection in the background, so
+// browser edits reach the server like CLI ones do.
+func (m *Model) pushLater() {
+	if p := m.project(); p != nil {
+		m.pushCollection(p.Collection)
 	}
 }
 
+func (m *Model) pushCollection(name string) {
+	if m.sync != nil {
+		m.sync(name)
+	}
+}
+
+// edit opens t in the external editor, by way of a temporary file;
+// finishEdit saves the result when the editor exits.
 func (m *Model) edit(t *thread.Thread) tea.Cmd {
-	path := m.store.ThreadPath(m.project(), t.ID)
-	return tea.ExecProcess(editor.Command(path), func(err error) tea.Msg {
+	sess, err := editor.Start(t)
+	if err != nil {
+		m.err = err
+		return nil
+	}
+	m.editing = sess
+	return tea.ExecProcess(editor.Command(sess.Path), func(err error) tea.Msg {
 		return editorDoneMsg{err}
 	})
+}
+
+func (m *Model) finishEdit(editErr error) {
+	sess := m.editing
+	m.editing = nil
+	if sess == nil {
+		return
+	}
+	if editErr != nil {
+		os.Remove(sess.Path)
+		m.err = fmt.Errorf("editor: %w", editErr)
+		return
+	}
+	edited, err := sess.Finish()
+	switch {
+	case err != nil:
+		m.err = err
+	case edited != nil:
+		if err := m.store.Save(m.project(), edited); err != nil {
+			m.err = err
+			return
+		}
+		m.status = edited.ID + ": saved"
+		m.pushLater()
+	}
+	if err := m.loadThreads(); err != nil {
+		m.err = err
+	}
 }
 
 // StartInPicker opens the browser on the project picker instead of a
@@ -590,7 +583,7 @@ func (m *Model) openProjects() {
 	for _, p := range m.projects {
 		ths := m.threads
 		if p != m.project() {
-			ths, _, _ = m.store.Threads(p)
+			ths, _ = m.store.Threads(p)
 		}
 		n := 0
 		for _, t := range ths {
@@ -661,7 +654,7 @@ func (m *Model) moveTo(i int) tea.Cmd {
 		m.status = fmt.Sprintf("%s is already in %s", t.ID, from.DisplayName())
 		return nil
 	}
-	to, err := m.store.Project(m.projects[i].ID) // creates the directory if needed
+	to, err := m.store.Project(m.projects[i].ID) // creates the project if needed
 	if err != nil {
 		m.err = err
 		return nil
@@ -674,10 +667,11 @@ func (m *Model) moveTo(i int) tea.Cmd {
 	delete(m.sticky, t.ID)
 	m.status = fmt.Sprintf("%s moved to %s", t.ID, to.DisplayName())
 	m.err = m.loadThreads()
-	if to.Collection == from.Collection {
-		return m.pushLater()
+	m.pushLater()
+	if to.Collection != from.Collection {
+		m.pushCollection(to.Collection)
 	}
-	return tea.Batch(m.pushLater(), m.pushCollection(to.Collection))
+	return nil
 }
 
 func (m *Model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -714,7 +708,7 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeThreads
 		m.input.Blur()
 
-		p, err := m.store.Project(m.project().ID) // creates the directory if needed
+		p, err := m.store.Project(m.project().ID) // creates the project if needed
 		if err != nil {
 			m.err = err
 			return m, nil
@@ -743,7 +737,8 @@ func (m *Model) updateAdd(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.addAndEdit {
 			return m, m.edit(t)
 		}
-		return m, m.pushLater()
+		m.pushLater()
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -765,9 +760,6 @@ func (m *Model) warnings() []string {
 		return nil
 	}
 	var ws []string
-	if p.Mismatched() {
-		ws = append(ws, "project.yaml id does not match directory")
-	}
 	if project.IsPath(p.ID) {
 		ws = append(ws, "project identified by path alone")
 	}
@@ -1024,6 +1016,8 @@ func (m *Model) frame(header, body, footer string) string {
 		footer = th.Error.Render(m.err.Error())
 	} else if m.status != "" && m.mode != modeAdd && m.mode != modeNote {
 		footer = th.Status.Render(m.status) + "   " + footer
+	} else if m.syncTrouble != "" && m.mode != modeAdd && m.mode != modeNote {
+		footer = th.Error.Render(m.syncTrouble) + "   " + footer
 	}
 	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)
