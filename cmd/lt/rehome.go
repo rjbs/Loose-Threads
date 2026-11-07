@@ -58,6 +58,8 @@ func runRehome(args []string) error {
 	}
 	if total == 0 {
 		fmt.Println("no threads recorded under a path identity for this checkout; nothing to do")
+		return nil
 	}
+	syncAllInBackground(s)
 	return nil
 }

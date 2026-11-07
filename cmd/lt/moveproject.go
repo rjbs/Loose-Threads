@@ -34,5 +34,7 @@ func runMoveProject(args []string) error {
 		return nil
 	}
 	fmt.Printf("%s: %s -> %s\n", p.ID, from, p.Collection)
+	// Both collections changed: the project leaves one and joins the other.
+	syncAllInBackground(c.store)
 	return nil
 }
