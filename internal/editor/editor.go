@@ -1,5 +1,5 @@
-// Package editor builds the command that opens a thread file in the
-// user's editor.
+// Package editor opens a thread in the user's editor, by way of a
+// temporary file holding its Markdown form.
 package editor
 
 import (

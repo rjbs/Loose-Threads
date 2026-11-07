@@ -51,6 +51,13 @@ func runBrowse(args []string) error {
 	if picker {
 		m.StartInPicker()
 	}
+	m.SetSync(func(collection string) {
+		if collection == "" {
+			syncAllInBackground(s)
+			return
+		}
+		syncInBackground(s, &store.Project{Collection: collection})
+	})
 	if *themeName != "" {
 		th, ok := tui.LookupTheme(*themeName)
 		if !ok {

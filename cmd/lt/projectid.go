@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/rjbs/loosethreads/internal/project"
-	"github.com/rjbs/loosethreads/internal/store"
 )
 
 func init() {
@@ -36,6 +35,6 @@ func runProjectID(args []string) error {
 		fmt.Println(id.ID)
 		return nil
 	}
-	fmt.Printf("id:     %s\nsource: %s\ndir:    %s\n", id.ID, id.Source, store.DirName(id.ID))
+	fmt.Printf("id:     %s\nsource: %s\n", id.ID, id.Source)
 	return nil
 }

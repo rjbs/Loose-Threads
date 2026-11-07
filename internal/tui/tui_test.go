@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -111,7 +110,7 @@ func checkState(t *testing.T, name string, s *store.Store, project, title string
 	if err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
-	ths, _, _ := s.Threads(p)
+	ths, _ := s.Threads(p)
 	for _, th := range ths {
 		if th.Title() == title {
 			if th.State != want {
@@ -179,7 +178,7 @@ func TestCloseWithNote(t *testing.T) {
 	checkView(t, "hidden after own close", m, []string{"Other"}, []string{"Decide thing"})
 
 	p, _ := s.LookupProject(projA)
-	ths, _, _ := s.Threads(p)
+	ths, _ := s.Threads(p)
 	if !strings.HasSuffix(ths[0].Body, "(human):**\nDone: chose option B\n") {
 		t.Errorf("note not appended: %q", ths[0].Body)
 	}
@@ -289,25 +288,6 @@ func TestMoveThread(t *testing.T) {
 	m, s = newModel(t, "github.com/rjbs/fresh", fixture{projA, "Wanderer", thread.Open})
 	press(m, "]", "m", "j", "enter")
 	checkState(t, "moved into fresh project", s, "github.com/rjbs/fresh", "Wanderer", thread.Open)
-}
-
-func TestMismatchedProjectWarning(t *testing.T) {
-	m, s := newModel(t, projA, fixture{projA, "One", thread.Open})
-	checkView(t, "no warning normally", m, nil, []string{"warning:"})
-
-	p, _ := s.LookupProject(projA)
-	os.WriteFile(filepath.Join(p.Dir, "project.yaml"), []byte("id: /old/path\n"), 0o644)
-	m2, err := New(s, projA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m2.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
-	checkView(t, "warning shown", m2, []string{warningGlyph + " project.yaml id does not match directory", "One"}, nil)
-	if len(m2.projects) != 1 {
-		t.Errorf("mismatched directory listed %d times, want 1", len(m2.projects))
-	}
-	press(m2, "p")
-	checkView(t, "picker has one entry, no warning", m2, []string{"1    /old/path"}, []string{"warning:", "1    " + projA})
 }
 
 func TestPathIdentityWarning(t *testing.T) {
@@ -455,12 +435,6 @@ func TestLiveUpdates(t *testing.T) {
 	externalSetState(t, s, projA, ghost, thread.Abandoned)
 	tickOnce(m)
 	checkView(t, "never-seen closed thread hidden", m, nil, []string{"Ghost"})
-
-	// Deleted on disk: vanishes.
-	p, _ := s.LookupProject(projA)
-	os.Remove(s.ThreadPath(p, added.ID))
-	press(m, "c")
-	checkView(t, "show closed before delete check", m, []string{"Ghost"}, []string{"Added elsewhere"})
 }
 
 func TestLocalCloseHidesImmediately(t *testing.T) {
@@ -473,7 +447,7 @@ func TestLocalCloseHidesImmediately(t *testing.T) {
 
 	// Someone else closes Two while we watch: it lingers.
 	p, _ := s.LookupProject(projA)
-	ths, _, _ := s.Threads(p)
+	ths, _ := s.Threads(p)
 	for _, th := range ths {
 		if th.Title() == "Two" {
 			externalSetState(t, s, projA, th, thread.Done)
@@ -489,7 +463,7 @@ func TestProjectSwitchResetsSticky(t *testing.T) {
 		fixture{projB, "Beta one", thread.Open},
 	)
 	p, _ := s.LookupProject(projA)
-	ths, _, _ := s.Threads(p)
+	ths, _ := s.Threads(p)
 	externalSetState(t, s, projA, ths[0], thread.Done)
 	tickOnce(m)
 	checkView(t, "lingers", m, []string{"✓ Alpha one"}, nil)

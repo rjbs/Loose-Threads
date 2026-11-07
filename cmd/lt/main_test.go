@@ -153,7 +153,7 @@ func TestCLI(t *testing.T) {
 	w.check("append nothing", 1, `nothing to append`, "append", b, "  ")
 	w.check("append missing thread", 1, `no thread matches`, "append", "zzzz", "x")
 
-	w.checkIn("", []string{"EDITOR=true"}, "edit without a terminal", 1, `needs a terminal.*lt append[^\n]*\n  .*`+regexp.QuoteMeta(a)+`\.md`, "edit", a)
+	w.checkIn("", []string{"EDITOR=true"}, "edit without a terminal", 1, `needs a terminal.*lt append`, "edit", a)
 
 	w.check("double dash title", 0, idPat, "add", "--", "-leading-dash")
 	w.check("show dash title", 0, `-leading-dash`, "list")
@@ -203,31 +203,15 @@ func TestRehome(t *testing.T) {
 	w.check("only one project remains", 0, `(?s)^github\.com/rjbs/testrepo\n.*Early`, "list", "-scope", "all")
 }
 
-func TestSyncCommand(t *testing.T) {
+func TestRouting(t *testing.T) {
 	w := newWorld(t)
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	if out, err := exec.Command("git", "init", "-q", "--bare", "-b", "main", remote).CombinedOutput(); err != nil {
-		t.Fatalf("git init --bare: %v\n%s", err, out)
-	}
-
-	w.check("no remotes yet", 0, `no collections have remotes`, "sync")
-	w.check("sync add", 0, `^work: `, "sync", "add", "work", remote)
-	w.check("bad usage", 1, `usage:`, "sync", "add", "work")
-
-	// Route this project into work, then add a thread and sync.
+	os.MkdirAll(w.store, 0o755)
 	os.WriteFile(filepath.Join(w.store, "config.yaml"),
-		[]byte("collections:\n  work:\n    remote: "+remote+"\nroutes:\n  - match: \"github.com/rjbs/*\"\n    collection: work\n"), 0o644)
-	_, errOut, _ := w.run("", nil, "add", "Synced thing")
+		[]byte("routes:\n  - match: \"github.com/rjbs/*\"\n    collection: work\n"), 0o644)
+	_, errOut, _ := w.run("", nil, "add", "Routed thing")
 	if !strings.Contains(errOut, "in collection work") {
 		t.Fatalf("expected routing into work: %q", errOut)
 	}
-	w.check("sync pushes", 0, `^work: committed, pushed\n$`, "sync")
-	w.check("sync again", 0, `^work: up to date\n$`, "sync")
-	w.check("one collection", 0, `up to date`, "sync", "-collection", "work")
-	w.check("quiet", 0, `^$`, "sync", "-quiet")
-
-	out, err := exec.Command("git", "-C", remote, "log", "--oneline").CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "lt sync from") {
-		t.Errorf("remote log: %v\n%s", err, out)
-	}
+	w.check("move-project", 0, `github\.com/rjbs/testrepo: work -> personal`, "move-project", "personal")
+	w.check("still listed", 0, `Routed thing`, "list")
 }

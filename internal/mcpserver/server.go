@@ -13,7 +13,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rjbs/loosethreads/internal/store"
-	ltsync "github.com/rjbs/loosethreads/internal/sync"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
 
@@ -24,13 +23,15 @@ type server struct {
 	store          *store.Store
 	defaultProject string
 	now            func() time.Time
+	afterWrite     func(*store.Project)
 }
 
 // New returns an MCP server over s.  defaultProject is used when a tool
 // call omits the project; it is normally the identity of the directory
-// the server was started in.
-func New(s *store.Store, defaultProject string) *mcp.Server {
-	srv := &server{store: s, defaultProject: defaultProject, now: time.Now}
+// the server was started in.  afterWrite, if not nil, is called with the
+// project after each change, to start a sync.
+func New(s *store.Store, defaultProject string, afterWrite func(*store.Project)) *mcp.Server {
+	srv := &server{store: s, defaultProject: defaultProject, now: time.Now, afterWrite: afterWrite}
 
 	m := mcp.NewServer(&mcp.Implementation{
 		Name:    "loosethreads",
@@ -99,11 +100,10 @@ func (s *server) project(id string, create bool) (*store.Project, error) {
 }
 
 type addInput struct {
-	Title      string `json:"title" jsonschema:"one-line summary of the deferred item"`
-	Body       string `json:"body,omitempty" jsonschema:"Markdown explaining the context: what was being done, why this was deferred, what to do"`
-	Project    string `json:"project,omitempty" jsonschema:"project id; defaults to the project of the server's working directory"`
-	Session    string `json:"session,omitempty" jsonschema:"the calling session's id, for provenance"`
-	Transcript string `json:"transcript,omitempty" jsonschema:"path to the calling session's transcript, if known"`
+	Title   string `json:"title" jsonschema:"one-line summary of the deferred item"`
+	Body    string `json:"body,omitempty" jsonschema:"Markdown explaining the context: what was being done, why this was deferred, what to do"`
+	Project string `json:"project,omitempty" jsonschema:"project id; defaults to the project of the server's working directory"`
+	Session string `json:"session,omitempty" jsonschema:"the calling session's id, for provenance"`
 }
 
 func (s *server) addThread(ctx context.Context, req *mcp.CallToolRequest, in addInput) (*mcp.CallToolResult, store.View, error) {
@@ -121,12 +121,11 @@ func (s *server) addThread(ctx context.Context, req *mcp.CallToolRequest, in add
 		body += "\n" + text + "\n"
 	}
 	t := &thread.Thread{
-		State:      thread.Open,
-		Created:    s.now().Truncate(time.Second),
-		Session:    in.Session,
-		Transcript: in.Transcript,
-		Origin:     thread.OriginAgent,
-		Body:       body,
+		State:   thread.Open,
+		Created: s.now().Truncate(time.Second),
+		Session: in.Session,
+		Origin:  thread.OriginAgent,
+		Body:    body,
 	}
 	if err := s.store.Create(p, t, t.Created); err != nil {
 		return nil, store.View{}, err
@@ -135,16 +134,12 @@ func (s *server) addThread(ctx context.Context, req *mcp.CallToolRequest, in add
 	return nil, s.store.View(p, t), nil
 }
 
-// pushLater syncs p's collection in the background if it has a remote.
+// pushLater syncs p's collection in the background, through the hook
+// the server was built with.
 func (s *server) pushLater(p *store.Project) {
-	if s.store.Config().Remote(p.Collection) == "" {
-		return
+	if s.afterWrite != nil {
+		s.afterWrite(p)
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		ltsync.Collection(ctx, s.store, p.Collection)
-	}()
 }
 
 type listInput struct {
@@ -190,7 +185,7 @@ func (s *server) listThreads(ctx context.Context, req *mcp.CallToolRequest, in l
 	}
 
 	for _, p := range projects {
-		ths, _, err := s.store.Threads(p)
+		ths, err := s.store.Threads(p)
 		if err != nil {
 			return nil, out, err
 		}
