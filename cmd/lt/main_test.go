@@ -248,3 +248,12 @@ func TestMigrate(t *testing.T) {
 	w.check("body kept", 0, `(?s)state: open.*origin: agent.*Old open thread\n\nWhy\.\n$`, "show", "aaaaaa")
 	w.check("again", 0, `(?s)2 already present.*0 threads imported`, "migrate")
 }
+
+func TestProjectNames(t *testing.T) {
+	w := newWorld(t)
+	w.check("add", 0, idPat, "add", "Thing")
+	w.check("defaults already set", 0, `nothing to do`, "project-defaults")
+	w.check("rename", 0, `^github\.com/rjbs/testrepo: named "Test Repo"\n$`, "rename-project", "Test", "Repo")
+	w.check("rename needs a name", 1, `a NAME is required`, "rename-project")
+	w.check("rename missing project", 1, `not found`, "rename-project", "-project", "nope/nope", "X")
+}

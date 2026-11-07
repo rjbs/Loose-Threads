@@ -84,9 +84,12 @@ The token is a secret, so keep `config.yaml` readable only by you.
     lt sync -collection work
     lt sync -status             # how syncing has gone, without syncing
     lt move-project work        # move this project into another collection
+    lt rename-project Some Name # set this project's display name
+    lt project-defaults -n      # what default names and colors would fill in
 
 Writes start a sync in the background (`lt add`, `done`, `abandon`,
-`reopen`, `append`, `edit`, the MCP tools, and the browser), so a
+`reopen`, `append`, `edit`, `move-project`, `rehome`, `rename-project`,
+`project-defaults`, the MCP tools, and the browser), so a
 thread is on the server within seconds of being recorded.  The
 SessionStart hook starts a sync without waiting for it, and the
 browser syncs every minute.  Set `LOOSETHREADS_NO_SYNC=1` to sync only

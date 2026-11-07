@@ -116,7 +116,7 @@ func TestProjects(t *testing.T) {
 
 	addThread(t, s, "github.com/rjbs/zed", "z")
 	addThread(t, s, "github.com/rjbs/alpha", "a")
-	checkProjects(t, s, "github.com/rjbs/alpha", "github.com/rjbs/zed")
+	checkProjects(t, s, "rjbs/alpha", "rjbs/zed")
 
 	if _, err := s.LookupProject("nope"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("LookupProject(nope) = %v, want ErrNotFound", err)
@@ -273,7 +273,7 @@ func TestRehome(t *testing.T) {
 		t.Errorf("moved %v", moved)
 	}
 	checkTitles(t, s, "github.com/rjbs/new", "one", "two")
-	checkProjects(t, s, "github.com/rjbs/new")
+	checkProjects(t, s, "rjbs/new")
 
 	if _, err := s.Rehome("/old/path", "github.com/rjbs/new"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("rehoming a gone project: %v, want ErrNotFound", err)

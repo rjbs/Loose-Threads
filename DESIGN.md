@@ -595,6 +595,16 @@ A project is a TaskList.  Its identity is the vendor property
 `name`, which any client may change; identity in the name would let a
 rename in another client split the project in two.
 
+The name and `color` are for people.  When `lt` creates a list, it
+names it after the id without its host (`rjbs/Loose-Threads`), or for
+a path, after the last element, and colors it from a fixed palette by a
+hash of the id, so every machine agrees.  It never sets either again on
+its own, so a change made in `lt rename-project` or in any other client
+stays; `move-project` carries both to the new list.  `lt
+project-defaults` fills in the defaults for lists that have no name of
+their own (or only their id) or no color, as lists made before this
+were.
+
 TaskLists have nothing like `uid`, so two machines that both start a
 new project offline will each create a list for it.  After each pull,
 duplicates are merged, keeping the list with the
