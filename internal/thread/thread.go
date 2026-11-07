@@ -1,6 +1,6 @@
-// Package thread defines the on-disk format of a single Loose Threads
-// item: a Markdown file with YAML frontmatter, whose first non-blank body
-// line is the title.
+// Package thread defines a single Loose Threads item and the form it is
+// shown and edited in: Markdown with YAML frontmatter, whose first
+// non-blank body line is the title.
 package thread
 
 import (
@@ -33,7 +33,7 @@ const (
 
 // Thread is one deferred item.  It is stored as a JMAP Task; ID is the
 // Task's uid.  The Markdown-with-frontmatter form produced by Marshal is
-// how a thread is shown and edited, and how the old file store held it.
+// how a thread is shown and edited.
 type Thread struct {
 	ID string `yaml:"-"`
 

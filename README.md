@@ -106,15 +106,6 @@ from one and a retitle from the other both survive, and notes appended
 on both are both kept.  Only a real rewrite of the body on both sides
 is a conflict; the local version wins and `lt sync` says so.
 
-### From the Markdown-file store
-
-Before JMAP storage, threads were Markdown files under the store root,
-synced with git.  `lt migrate` imports them into the cache, keeping
-their ids; `lt migrate -n` reports what it would do.  A project keeps
-its old collection if that name is still in `config.yaml`, and is
-routed otherwise.  Running it again, or on a second machine with the
-same files, does not duplicate anything.  The files are left in place.
-
 ## Use
 
     lt add "Handle the empty-remote case" -body "Came up while writing the normalizer."

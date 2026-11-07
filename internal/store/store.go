@@ -3,7 +3,7 @@
 // TaskList, grouped into collections, each of which may be synced with
 // an account on a JMAP for Tasks server.  Every command reads and writes
 // the cache and never waits on the network; sync is separate.  See the
-// JMAP storage section of DESIGN.md.
+// "Storage and sync" section of DESIGN.md.
 package store
 
 import (
