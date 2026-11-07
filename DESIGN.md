@@ -422,15 +422,17 @@ independently and syncing later do not collide.
 Migration from the current layout: move existing project directories
 under `local/`.
 
-## Proposed: JMAP for Tasks storage
+## JMAP for Tasks storage
 
-Proposed 2026-11-06, not yet built.  Threads move from Markdown files
-synced by git to JMAP Task objects, held in a local cache and synced
-with a JMAP for Tasks server (TaskMaster, in practice).  The goal is
-better human interfaces: a server gives other clients, web and mobile
-included, something to talk to, and keeping the data in the orthodox
-JMAP shape means general Tasks tools work on it too.  Everything in
-this section supersedes the file-and-git storage above once built.
+Proposed 2026-11-06 and built the same day on the jmap-storage branch,
+not yet deployed.  Threads move from Markdown files synced by git to
+JMAP Task objects, held in a local cache and synced with a JMAP for
+Tasks server (TaskMaster, in practice).  The goal is better human
+interfaces: a server gives other clients, web and mobile included,
+something to talk to, and keeping the data in the orthodox JMAP shape
+means general Tasks tools work on it too.  This section supersedes the
+*Storage* and *Sync between machines* sections above, which describe
+the file store that `lt migrate` imports from.
 
 ### What agents see
 
@@ -473,13 +475,28 @@ server's value.
 
 There is no long-running engine.  `lt` is a short-lived process, and
 several may run at once (a few agent sessions and the browser), so
-writers coordinate through short transactions and claims on pending
-entries, as in Jinx, and there is no set of live objects to keep in
-step.  The cache is one SQLite database in WAL mode, which suits
-several short-lived writers, through a pure-Go driver so that `lt`
-stays free of cgo.  A write starts a detached sync; the session-start hook shows the
-cache and starts a detached sync rather than waiting for one, so its
-list may be one sync behind.  The browser syncs on its poll loop.
+there is no set of live objects to keep in step.  The cache is one
+SQLite database in WAL mode, which suits several short-lived writers,
+through a pure-Go driver so that `lt` stays free of cgo.  Each write is
+one short transaction.  Rather than Jinx's claims on pending entries,
+only one sync of a collection runs at a time, under a lock file; a
+second waits for the first and then runs, so a write made during a
+sync is never left behind.  The pending mark is a sequence number, and
+a sync clears it only if it is unchanged since the change was sent, so
+a write made while a request is out stays pending.
+
+A write starts a detached sync; the session-start hook shows the cache
+and starts a detached sync rather than waiting for one, so its list may
+be one sync behind.  The browser starts one every minute, and notices
+any change to the cache by a counter every write bumps.
+
+Each sync pulls, pushes, and pulls again.  The first pull is what makes
+the description resolver work: rebase happens only on the way in, so a
+pending description pushed without a pull first would replace notes
+appended elsewhere since the last one.  Pulling first narrows that to
+the time between two requests.  Requests are kept within the limits the
+Session advertises (`maxCallsInRequest`, `maxObjectsInGet`), and a full
+resync of Tasks pages through `Task/query`.
 
 ### Appends and the description resolver
 
@@ -560,28 +577,35 @@ rename in another client split the project in two.
 
 TaskLists have nothing like `uid`, so two machines that both start a
 new project offline will each create a list for it.  Two defenses:
-before creating a list, sync-out fetches all TaskLists (there are only
-a few hundred) and adopts a matching one; and sync-in merges
-duplicates, keeping the list with the lowest id, moving the other's
-Tasks into it, and destroying the empty one.  The rule is
-deterministic, so two machines merging at once agree.
+after each pull, duplicates are merged, keeping the list with the
+lowest JMAP id (or the oldest, if none has one yet), moving the
+others' Tasks into it, and destroying the empty ones; and before
+creating a list, sync fetches all TaskLists (there are only a few
+hundred) and adopts a matching one it does not yet know.  The merge
+runs right after the first pull, so a list made here for a project
+another machine already created is absorbed before it is ever sent.
+The rule is deterministic, so two machines merging at once agree.  Until
+then, reads treat every live list carrying a project id as that project.
 
-A thread created offline in a project created offline refers to a
-TaskList the server has never seen.  The Task's `taskListId` holds the
-pending list's local key, TaskLists always sync out before Tasks, and
-the key is rewritten when the real id arrives.  Jinx deferred
-cross-type references to pending creates; with two types and a fixed
-order, we do not need to.
+Tasks name their lists in `taskListIds`, a map from list id to `true`,
+as TaskMaster implements it.  `lt` keeps each Task in exactly one list;
+one filed elsewhere in several belongs, for `lt`, to the first that is
+a project.  A thread created offline in a project created offline
+refers to a TaskList the server has never seen: its `taskListIds` names
+the pending list by a creation reference made from its local key,
+TaskLists always sync out before Tasks, and the reference is rewritten
+when the real id arrives.  Jinx deferred cross-type references to
+pending creates; with two types and a fixed order, we do not need to.
 
 Moves follow:
 
-* `lt move` (a thread to another project) changes `taskListId`.
-* `lt rehome` changes the list's project property, or, when the target
-  list already exists, goes through the duplicate merge.
+* `lt move` (a thread to another project) changes `taskListIds`.
+* `lt rehome` moves every Task into the target project's list and
+  destroys the old list.
 * `lt move-project` (to another collection) is a move between
-  accounts: `Task/copy` if the server has it, otherwise create in the
-  new account and destroy in the old.  `uid` keeps identity across
-  either.
+  accounts: create in the new account and destroy in the old.  `uid`
+  keeps identity across it.  `Task/copy` would also do, but nothing
+  needs it.
 
 ### Foreign lists and tasks
 
@@ -609,16 +633,22 @@ Tailscale.  This is tracked as a thread rather than decided here.
 ### Testing
 
 Local reads and writes test against the cache alone.  Sync tests run
-against an in-process scripted JMAP server serving Task and TaskList,
-modeled on Jinx's scripted-server tier, including `Task/changes`
-answering `cannotCalculateChanges`, which forces a full resync.
+against `internal/jmaptest`, a small in-memory JMAP server serving Task
+and TaskList with change tracking, uid queries, and patches.  It
+advertises small request limits, so a handful of threads exercises
+chunking, and can answer every `/changes` with
+`cannotCalculateChanges`, which forces a full resync.  It is not
+Jinx's scripted server: its tests are Go code, not data.
 
 ### Migration
 
-Each existing thread file becomes a pending create in the cache, its
-project's list a pending TaskList create, and the first sync pushes
-them.  Since `uid` is the identity, a migration interrupted partway can
-simply be run again.
+`lt migrate` makes each existing thread file a pending create in the
+cache, its project's list a pending TaskList create, and the first sync
+pushes them.  Since `uid` is the identity, a migration interrupted
+partway can simply be run again, and two machines migrating the same
+files produce one Task per thread.  On a copy of a real store of 522
+threads, every one came through identical to its file apart from the
+time zone timestamps are shown in.
 
 ## Open questions
 

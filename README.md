@@ -1,17 +1,17 @@
 # Loose Threads
 
 A backlog of small deferred items that come up while working with Claude
-Code: "we should fix that too, but not now."  Threads are Markdown files
-with YAML frontmatter, kept per project in one central store, written by
-the agent through a CLI or MCP server and browsed by you in a terminal
-UI.  See [DESIGN.md](DESIGN.md) for the reasoning.
+Code: "we should fix that too, but not now."  Threads are JMAP Tasks,
+kept per project in a local cache that syncs with a JMAP for Tasks
+server, written by the agent through a CLI or MCP server and browsed by
+you in a terminal UI.  See [DESIGN.md](DESIGN.md) for the reasoning.
 
 ## Install
 
     go install ./cmd/lt
 
-The store lives in `$LOOSETHREADS_HOME`, defaulting to
-`~/.local/share/loosethreads`.
+The store (its `config.yaml` and the cache) lives in
+`$LOOSETHREADS_HOME`, defaulting to `~/.local/share/loosethreads`.
 
 ## Set up Claude Code
 
@@ -43,50 +43,52 @@ Either way, a line in `~/.claude/CLAUDE.md` helps:
 
 ## Sync between machines
 
-Threads found on a disposable VM should not die with it.  The store is
-divided into *collections*, each a directory under the store root; a
-collection with a git remote is a clone and is synced, one without is
-not.  Projects are routed into collections by rules in
-`$LOOSETHREADS_HOME/config.yaml`:
+Threads are stored as JMAP Tasks, and each project is a TaskList.
+Everything `lt` does reads and writes a local cache
+(`$LOOSETHREADS_HOME/cache.sqlite`) and never waits on the network;
+sync with a JMAP for Tasks server, such as TaskMaster, is separate.
 
+The cache is divided into *collections*, and a collection with an
+account syncs with that JMAP account; one without does not.  Projects
+are routed into collections by rules in `$LOOSETHREADS_HOME/config.yaml`.
+`server` is the URL of the JMAP Session resource, for the whole store
+or per collection:
+
+    server: https://taskmaster.example.ts.net/jmap/session
     collections:
-      work:
-        remote: git@gitbox.example.com:rjbs/threads-work.git
-      personal:
-        remote: git@github.com:rjbs/threads-personal.git
+      work:     { account: work }
+      personal: { account: personal }
+      elsewhere: { account: rjbs, server: https://other.example/jmap/session }
     routes:
       - { match: "github.com/fastmail/*", collection: work }
       - { match: "github.com/rjbs/*",     collection: personal }
 
-Sync commits are made as the collection's `author`, else the store's
-top-level `author`, else whatever git itself is configured with, else
-"Loose Threads <lt@hostname>" so a bare VM still works:
+Anything unrouted lands in `local`, which is never synced.
 
-    author: { name: Ricardo Signes, email: rjbs@example.com }
-    collections:
-      work:
-        remote: git@gitbox.example.com:rjbs/threads-work.git
-        author: { name: Ricardo Signes, email: rjbs@work.example }
-
-Anything unrouted lands in `local`, which is never synced.  Different
-collections can point at repositories owned by different parties, so
-the work admin never sees personal threads.
-
-    lt sync add work git@gitbox.example.com:rjbs/threads-work.git
-                                # clone into place (or attach) and record it
-    lt sync                     # commit, pull, push every collection with a remote
+    lt sync                     # pull, push, pull every collection with an account
     lt sync -collection work
     lt move-project work        # move this project into another collection
 
-Writes push in the background automatically (`lt add`, `done`,
-`abandon`, `reopen`, `edit`, the MCP tools, and the browser), so a
-thread is on the remote within seconds of being recorded.  The
-SessionStart hook pulls, and the browser syncs every minute.  Set
-`LOOSETHREADS_NO_PUSH=1` to sync only by hand.
+Writes start a sync in the background (`lt add`, `done`, `abandon`,
+`reopen`, `append`, `edit`, the MCP tools, and the browser), so a
+thread is on the server within seconds of being recorded.  The
+SessionStart hook starts a sync without waiting for it, and the
+browser syncs every minute.  Set `LOOSETHREADS_NO_SYNC=1` to sync only
+by hand.
 
-A conflict (the same thread changed on two machines) is left as git's
-markers; `lt sync` reports it, the thread shows as unreadable until the
-file is fixed, and the next sync commits the resolution.
+The same thread changed on two machines merges by property: the state
+from one and a retitle from the other both survive, and notes appended
+on both are both kept.  Only a real rewrite of the body on both sides
+is a conflict; the local version wins and `lt sync` says so.
+
+### From the Markdown-file store
+
+Before JMAP storage, threads were Markdown files under the store root,
+synced with git.  `lt migrate` imports them into the cache, keeping
+their ids; `lt migrate -n` reports what it would do.  A project keeps
+its old collection if that name is still in `config.yaml`, and is
+routed otherwise.  Running it again, or on a second machine with the
+same files, does not duplicate anything.  The files are left in place.
 
 ## Use
 
@@ -100,7 +102,7 @@ file is fixed, and the next sync commits the resolution.
     lt abandon 7k2m -note "superseded by the rewrite"
     lt reopen 7k2m
     lt append 7k2m "also affects sync"        # adds a dated, attributed paragraph
-    lt edit 7k2m                # in $EDITOR, cursor on the title line
+    lt edit 7k2m                # its Markdown form, in $EDITOR, cursor on the title line
     lt project-id -v            # what project is this directory?
     lt rehome                   # after adding a remote: move path-identified threads under it
     lt browse                   # the TUI; bare "lt" at a terminal does the same
