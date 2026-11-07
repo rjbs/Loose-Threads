@@ -250,7 +250,7 @@ func TestProjectSwitching(t *testing.T) {
 	checkView(t, "previous", m, []string{projB}, nil)
 
 	press(m, "p")
-	checkView(t, "picker", m, []string{"projects", "1    " + projA, "1    " + projB}, nil)
+	checkView(t, "picker", m, []string{"projects", "1    " + store.DefaultName(projA), "1    " + store.DefaultName(projB)}, nil)
 	press(m, "k", "enter")
 	checkView(t, "picked", m, []string{projA, "Alpha one"}, nil)
 }
@@ -276,7 +276,7 @@ func TestMoveThread(t *testing.T) {
 
 	press(m, "m", "j", "enter")
 	checkState(t, "moved", s, projB, "Alpha one", thread.Open)
-	checkView(t, "gone from alpha", m, []string{"moved to " + projB, "Alpha two", projA}, []string{"Alpha one"})
+	checkView(t, "gone from alpha", m, []string{"moved to " + store.DefaultName(projB), "Alpha two", projA}, []string{"Alpha one"})
 	if m.mode != modeThreads {
 		t.Errorf("mode %d after move, want threads", m.mode)
 	}

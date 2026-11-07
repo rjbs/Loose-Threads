@@ -39,6 +39,7 @@ type Store struct {
 type Project struct {
 	ID         string
 	Name       string
+	Color      string // a CSS color, or empty
 	Collection string
 }
 
@@ -108,6 +109,7 @@ func projectOf(lists []*row) *Project {
 	if name, _ := l.local["name"].(string); name != p.ID {
 		p.Name = name
 	}
+	p.Color, _ = l.local["color"].(string)
 	return p
 }
 
@@ -131,7 +133,7 @@ func (s *Store) Project(id string) (*Project, error) {
 	}
 	collection := s.config.Route(id)
 	err := s.tx(func(tx *sql.Tx) error {
-		_, err := newList(tx, collection, id, id)
+		_, err := newList(tx, collection, id, "", "")
 		return err
 	})
 	if err != nil {
@@ -147,11 +149,8 @@ func (s *Store) ProjectIn(id, name, collection string) (*Project, error) {
 	if p, err := s.LookupProject(id); err == nil || !errors.Is(err, ErrNotFound) {
 		return p, err
 	}
-	if name == "" {
-		name = id
-	}
 	err := s.tx(func(tx *sql.Tx) error {
-		_, err := newList(tx, collection, id, name)
+		_, err := newList(tx, collection, id, name, "")
 		return err
 	})
 	if err != nil {
@@ -160,9 +159,17 @@ func (s *Store) ProjectIn(id, name, collection string) (*Project, error) {
 	return s.LookupProject(id)
 }
 
-func newList(tx *sql.Tx, collection, id, name string) (*row, error) {
+// newList creates a project's TaskList.  A name that is empty or just the
+// id, or an empty color, is replaced by the default.
+func newList(tx *sql.Tx, collection, id, name, color string) (*row, error) {
+	if name == "" || name == id {
+		name = DefaultName(id)
+	}
+	if color == "" {
+		color = DefaultColor(id)
+	}
 	r := &row{collection: collection, typ: typeTaskList}
-	return r, setLocal(tx, r, patch.Object{"name": name, propProject: id})
+	return r, setLocal(tx, r, patch.Object{"name": name, "color": color, propProject: id})
 }
 
 // Projects lists every project, sorted by display name.
@@ -385,7 +392,8 @@ func (s *Store) MoveProject(id, collection string) (*Project, error) {
 			return nil
 		}
 		name, _ := lists[0].local["name"].(string)
-		dest, err := newList(tx, collection, id, name)
+		color, _ := lists[0].local["color"].(string)
+		dest, err := newList(tx, collection, id, name, color)
 		if err != nil {
 			return err
 		}
