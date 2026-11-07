@@ -348,3 +348,33 @@ func TestSyncLostResponse(t *testing.T) {
 	checkLostResponse(t, 2) // the TaskList create
 	checkLostResponse(t, 3) // the Task create, and the pull after it
 }
+
+// checkToken asserts whether a machine configured with a token can sync
+// with a server that requires one.
+func checkToken(t *testing.T, required, given string, ok bool) {
+	t.Helper()
+	srv := newServer(t)
+	srv.Token = required
+	a := newStoreWithConfig(t, fmt.Sprintf(`server: %s
+token: %q
+collections:
+  work: { account: work }
+routes:
+  - { match: "*", collection: work }
+`, srv.SessionURL(), given))
+	addThread(t, a, "p", "Title\n")
+	_, err := a.Sync(context.Background(), "work")
+	if (err == nil) != ok {
+		t.Errorf("server wants %q, machine gives %q: sync error %v", required, given, err)
+	}
+	if ok {
+		checkServerCount(t, srv, "work", "Task", 1)
+	}
+}
+
+func TestSyncToken(t *testing.T) {
+	checkToken(t, "secret", "secret", true)
+	checkToken(t, "secret", "wrong", false)
+	checkToken(t, "secret", "", false)
+	checkToken(t, "", "", true)
+}

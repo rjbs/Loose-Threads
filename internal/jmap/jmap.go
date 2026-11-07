@@ -25,6 +25,9 @@ type Client struct {
 	APIURL   string
 	Accounts map[string]Account
 
+	// Token, if set, is sent as a bearer token with every request.
+	Token string
+
 	// Limits from the Session's core capability.  Callers keep requests
 	// within them; Chunks helps.
 	MaxCallsInRequest int
@@ -38,14 +41,15 @@ type Account struct {
 	IsReadOnly bool   `json:"isReadOnly"`
 }
 
-// Open fetches the Session resource at sessionURL.
-func Open(ctx context.Context, sessionURL string) (*Client, error) {
-	c := &Client{HTTP: http.DefaultClient}
+// Open fetches the Session resource at sessionURL, presenting token, if
+// it is not empty, as a bearer token.
+func Open(ctx context.Context, sessionURL, token string) (*Client, error) {
+	c := &Client{HTTP: http.DefaultClient, Token: token}
 	req, err := http.NewRequestWithContext(ctx, "GET", sessionURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(req)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +180,7 @@ func (c *Client) Do(ctx context.Context, calls ...Call) ([]Response, error) {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.send(req)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +234,13 @@ func (c *Client) Batch(ctx context.Context, groups ...[]Call) ([]Response, error
 		return nil, err
 	}
 	return out, nil
+}
+
+func (c *Client) send(req *http.Request) (*http.Response, error) {
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	return c.HTTP.Do(req)
 }
 
 // One sends a single call and returns its response's arguments, turning

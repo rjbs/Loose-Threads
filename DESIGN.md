@@ -637,11 +637,14 @@ HTML.  This is not expected to happen.
 ### Servers and accounts
 
 Collections become accounts, likely two (personal and work) on one
-TaskMaster.  Keeping them separate is tidiness, not policy.  TaskMaster
-authenticates by loopback or Tailscale login only, so a VM needs to be
-on the tailnet, behind a tunnel, or talking to a TaskMaster with some
-new credential type; worst case, everything goes in one account over
-Tailscale.  This is tracked as a thread rather than decided here.
+TaskMaster.  Keeping them separate is tidiness, not policy.  The same
+backend is served two ways.  On the tailnet, it authenticates by
+Tailscale login, and a machine there sees every account.  On the public
+internet, it takes a bearer token, which `lt` sends when its config
+gives one; a work VM's token sees only the work account, so its config
+syncs only that collection.  A collection that names its own server
+uses only its own token, so no token is sent anywhere it was not meant
+for.
 
 ### Testing
 

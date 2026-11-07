@@ -65,6 +65,21 @@ or per collection:
 
 Anything unrouted lands in `local`, which is never synced.
 
+A server reachable beyond the tailnet may want a bearer token, given
+as `token` beside `server`, at the top or per collection.  A collection
+with a server of its own never inherits the top-level token.  A work
+VM that should see only work threads might be configured so:
+
+    server: https://taskmaster.example.com/jmap/session
+    token: SECRET
+    collections:
+      work: { account: work }
+    routes:
+      - { match: "*", collection: work }
+
+The token is a secret, so keep `config.yaml` readable only by you.
+`lt` reads it but never writes it.
+
     lt sync                     # pull, push, pull every collection with an account
     lt sync -collection work
     lt move-project work        # move this project into another collection

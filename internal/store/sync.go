@@ -61,7 +61,7 @@ const syncRounds = 3
 // a sync is never left behind.
 func (s *Store) Sync(ctx context.Context, collection string) (SyncResult, error) {
 	res := SyncResult{Collection: collection}
-	server, account, ok := s.config.Endpoint(collection)
+	ep, ok := s.config.Endpoint(collection)
 	if !ok {
 		return res, fmt.Errorf("%w: %s", ErrNotSynced, collection)
 	}
@@ -71,14 +71,14 @@ func (s *Store) Sync(ctx context.Context, collection string) (SyncResult, error)
 	}
 	defer unlock()
 
-	c, err := jmap.Open(ctx, server)
+	c, err := jmap.Open(ctx, ep.Server, ep.Token)
 	if err != nil {
 		return res, err
 	}
-	if _, ok := c.Accounts[account]; !ok {
-		return res, fmt.Errorf("store: %s: the server has no account %q for these credentials", collection, account)
+	if _, ok := c.Accounts[ep.Account]; !ok {
+		return res, fmt.Errorf("store: %s: the server has no account %q for these credentials", collection, ep.Account)
 	}
-	sy := &syncer{s: s, c: c, collection: collection, account: account, res: &res}
+	sy := &syncer{s: s, c: c, collection: collection, account: ep.Account, res: &res}
 
 	// Sync pulls before it pushes as well as after.  Rebase happens only
 	// on the way in, and a pending description sent without it would

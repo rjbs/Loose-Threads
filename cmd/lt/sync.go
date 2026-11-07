@@ -31,7 +31,7 @@ func syncInBackground(s *store.Store, p *store.Project) {
 	if p == nil {
 		return
 	}
-	if _, _, ok := s.Config().Endpoint(p.Collection); ok {
+	if _, ok := s.Config().Endpoint(p.Collection); ok {
 		spawnSync("-collection", p.Collection)
 	}
 }

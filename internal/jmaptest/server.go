@@ -36,6 +36,9 @@ type Server struct {
 	// Requests counts API requests.
 	Requests int
 
+	// Token, if set, is the bearer token every request must present.
+	Token string
+
 	// The limits the server advertises and enforces.  They start out as
 	// the package defaults.
 	MaxCallsInRequest int
@@ -78,8 +81,21 @@ func New(accounts ...string) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /session", s.session)
 	mux.HandleFunc("POST /api", s.api)
-	s.Server = httptest.NewServer(mux)
+	s.Server = httptest.NewServer(s.authenticate(mux))
 	return s
+}
+
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		token := s.Token
+		s.mu.Unlock()
+		if token != "" && r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // SessionURL is the URL of the Session resource.

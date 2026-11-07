@@ -369,28 +369,33 @@ func TestRouting(t *testing.T) {
 	checkRoute(t, &Config{}, "anything", LocalCollection)
 }
 
-func checkEndpoint(t *testing.T, c *Config, collection, server, account string, ok bool) {
+func checkEndpoint(t *testing.T, c *Config, collection string, want Endpoint, ok bool) {
 	t.Helper()
-	gs, ga, gok := c.Endpoint(collection)
-	if gs != server || ga != account || gok != ok {
-		t.Errorf("Endpoint(%q) = %q, %q, %v; want %q, %q, %v", collection, gs, ga, gok, server, account, ok)
+	got, gok := c.Endpoint(collection)
+	if gok != ok || (ok && got != want) {
+		t.Errorf("Endpoint(%q) = %+v, %v; want %+v, %v", collection, got, gok, want, ok)
 	}
 }
 
 func TestEndpoint(t *testing.T) {
 	c := &Config{
 		Server: "http://tm/jmap/session",
+		Token:  "store-token",
 		Collections: map[string]CollectionConfig{
-			"personal": {Account: "rjbs"},
-			"work":     {Account: "work", Server: "http://other/jmap/session"},
-			"unsynced": {},
+			"personal":  {Account: "rjbs"},
+			"own":       {Account: "rjbs", Token: "own-token"},
+			"work":      {Account: "work", Server: "http://other/jmap/session"},
+			"elsewhere": {Account: "x", Server: "http://else/jmap/session", Token: "else-token"},
+			"unsynced":  {},
 		},
 	}
-	checkEndpoint(t, c, "personal", "http://tm/jmap/session", "rjbs", true)
-	checkEndpoint(t, c, "work", "http://other/jmap/session", "work", true)
-	checkEndpoint(t, c, "unsynced", "", "", false)
-	checkEndpoint(t, c, LocalCollection, "", "", false)
-	checkEndpoint(t, &Config{Collections: map[string]CollectionConfig{"x": {Account: "a"}}}, "x", "", "a", false)
+	checkEndpoint(t, c, "personal", Endpoint{"http://tm/jmap/session", "store-token", "rjbs"}, true)
+	checkEndpoint(t, c, "own", Endpoint{"http://tm/jmap/session", "own-token", "rjbs"}, true)
+	checkEndpoint(t, c, "work", Endpoint{"http://other/jmap/session", "", "work"}, true)
+	checkEndpoint(t, c, "elsewhere", Endpoint{"http://else/jmap/session", "else-token", "x"}, true)
+	checkEndpoint(t, c, "unsynced", Endpoint{}, false)
+	checkEndpoint(t, c, LocalCollection, Endpoint{}, false)
+	checkEndpoint(t, &Config{Collections: map[string]CollectionConfig{"x": {Account: "a"}}}, "x", Endpoint{}, false)
 }
 
 func TestRoutedProjectLandsInCollection(t *testing.T) {

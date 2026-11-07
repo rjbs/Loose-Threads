@@ -23,40 +23,55 @@ const configFile = "config.yaml"
 // project into a collection.
 type Config struct {
 	Server      string                      `yaml:"server,omitempty"`
+	Token       string                      `yaml:"token,omitempty"`
 	Collections map[string]CollectionConfig `yaml:"collections,omitempty"`
 	Routes      []Route                     `yaml:"routes,omitempty"`
 }
 
 // CollectionConfig describes one collection.  A collection with no
 // account is never synced.  Server, if set, overrides the store's: it is
-// the URL of the JMAP Session resource.
+// the URL of the JMAP Session resource.  Token is a bearer token for the
+// server; without one, requests carry no credentials, as on a tailnet.
 type CollectionConfig struct {
 	Server  string `yaml:"server,omitempty"`
+	Token   string `yaml:"token,omitempty"`
 	Account string `yaml:"account,omitempty"`
 }
 
-// Endpoint returns the session URL and account id the named collection
-// syncs with, and whether it syncs at all.
-func (c *Config) Endpoint(collection string) (server, account string, ok bool) {
+// Endpoint is where a collection syncs: a Session URL, the bearer token
+// to present there, if any, and the account id.
+type Endpoint struct {
+	Server, Token, Account string
+}
+
+// Endpoint returns where the named collection syncs, and whether it
+// syncs at all.  A collection's own token is used if it has one;
+// otherwise the store's, but only along with the store's server, so that
+// a collection with a server of its own never sends the store's token
+// there.
+func (c *Config) Endpoint(collection string) (Endpoint, bool) {
 	if c == nil {
-		return "", "", false
+		return Endpoint{}, false
 	}
 	cc, found := c.Collections[collection]
 	if !found || cc.Account == "" {
-		return "", "", false
+		return Endpoint{}, false
 	}
-	server = cc.Server
-	if server == "" {
-		server = c.Server
+	e := Endpoint{Server: cc.Server, Token: cc.Token, Account: cc.Account}
+	if e.Server == "" {
+		e.Server = c.Server
+		if e.Token == "" {
+			e.Token = c.Token
+		}
 	}
-	return server, cc.Account, server != ""
+	return e, e.Server != ""
 }
 
 // Synced lists the collections that sync, sorted.
 func (c *Config) Synced() []string {
 	var names []string
 	for name := range c.Collections {
-		if _, _, ok := c.Endpoint(name); ok {
+		if _, ok := c.Endpoint(name); ok {
 			names = append(names, name)
 		}
 	}
@@ -95,21 +110,8 @@ func (s *Store) loadConfig() error {
 	return nil
 }
 
-// Config returns the loaded configuration.  Callers may modify it and
-// then SaveConfig.
+// Config returns the loaded configuration.
 func (s *Store) Config() *Config { return s.config }
-
-// SaveConfig writes config.yaml.
-func (s *Store) SaveConfig() error {
-	if err := os.MkdirAll(s.Root, 0o755); err != nil {
-		return err
-	}
-	data, err := yaml.Marshal(s.config)
-	if err != nil {
-		return err
-	}
-	return writeAtomic(s.configPath(), data)
-}
 
 // Route returns the collection a project with the given id belongs in:
 // the first matching route's, else local.
@@ -175,27 +177,3 @@ func (s *Store) Collections() ([]string, error) {
 	return append([]string{LocalCollection}, names...), nil
 }
 
-// writeAtomic writes data to a temporary file beside path and renames it
-// into place, so readers never see a partial file.
-func writeAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
-}
