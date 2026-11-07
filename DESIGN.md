@@ -475,7 +475,9 @@ There is no long-running engine.  `lt` is a short-lived process, and
 several may run at once (a few agent sessions and the browser), so
 writers coordinate through short transactions and claims on pending
 entries, as in Jinx, and there is no set of live objects to keep in
-step.  A write starts a detached sync; the session-start hook shows the
+step.  The cache is one SQLite database in WAL mode, which suits
+several short-lived writers, through a pure-Go driver so that `lt`
+stays free of cgo.  A write starts a detached sync; the session-start hook shows the
 cache and starts a detached sync rather than waiting for one, so its
 list may be one sync behind.  The browser syncs on its poll loop.
 
@@ -546,6 +548,9 @@ lost can be retried safely: before resending, sync looks the uid up
 and adopts the existing Task if found.  This is also what makes
 migration restartable.
 
+The uid is the bare thread id, with no prefix marking it as ours.
+Should one ever be needed, every uid can be rewritten in bulk.
+
 ### Projects as TaskLists
 
 A project is a TaskList.  Its identity is the vendor property
@@ -614,13 +619,6 @@ Each existing thread file becomes a pending create in the cache, its
 project's list a pending TaskList create, and the first sync pushes
 them.  Since `uid` is the identity, a migration interrupted partway can
 simply be run again.
-
-### Still to decide
-
-* The cache's storage: SQLite in WAL mode (a pure-Go driver avoids
-  cgo) is the leading candidate, given several concurrent writers.
-* Whether `uid` is the bare thread id or carries a prefix.  Bare is
-  probably fine, since the account belongs to Loose Threads.
 
 ## Open questions
 
