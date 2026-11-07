@@ -59,8 +59,8 @@ const syncRounds = 3
 // out, then server changes in.  Only one sync of a collection runs at a
 // time; a second waits for the first, then runs, so a write made during
 // a sync is never left behind.
-func (s *Store) Sync(ctx context.Context, collection string) (SyncResult, error) {
-	res := SyncResult{Collection: collection}
+func (s *Store) Sync(ctx context.Context, collection string) (res SyncResult, err error) {
+	res = SyncResult{Collection: collection}
 	ep, ok := s.config.Endpoint(collection)
 	if !ok {
 		return res, fmt.Errorf("%w: %s", ErrNotSynced, collection)
@@ -70,6 +70,11 @@ func (s *Store) Sync(ctx context.Context, collection string) (SyncResult, error)
 		return res, err
 	}
 	defer unlock()
+	defer func(start time.Time) {
+		if rerr := s.recordSync(collection, start, err); err == nil {
+			err = rerr
+		}
+	}(time.Now())
 
 	c, err := jmap.Open(ctx, ep.Server, ep.Token)
 	if err != nil {

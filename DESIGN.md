@@ -490,6 +490,14 @@ and starts a detached sync rather than waiting for one, so its list may
 be one sync behind.  The browser starts one every minute, and notices
 any change to the cache by a counter every write bumps.
 
+Because these syncs run where nobody sees them, each records its start
+time and error, if any, in the cache.  The session-start hook, the
+browser's footer, and `lt sync -status` report from that record: a
+failed last sync, changes the server refused (the per-object error each
+pending row keeps), and changes left waiting over an hour with no sync
+at all, which means syncs are not running.  Merge conflicts, where the
+local value of a property won, are reported only by a sync run by hand.
+
 Each sync pulls, pushes, and pulls again.  The first pull is what makes
 the description resolver work: rebase happens only on the way in, so a
 pending description pushed without a pull first would replace notes

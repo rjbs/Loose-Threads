@@ -176,4 +176,3 @@ func (s *Store) Collections() ([]string, error) {
 	sort.Strings(names)
 	return append([]string{LocalCollection}, names...), nil
 }
-

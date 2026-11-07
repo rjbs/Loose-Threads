@@ -2,9 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/rjbs/loosethreads/internal/jmaptest"
 )
 
 // checkHook runs "lt hook NAME" with the given stdin JSON and asserts the
@@ -26,6 +31,25 @@ func (w *world) checkHook(name, hook, stdin, wantEvent, wantMatch string) {
 	}
 	if !regexp.MustCompile(wantMatch).MatchString(got.HookSpecificOutput.AdditionalContext) {
 		w.t.Errorf("%s: context does not match %q:\n%s", name, wantMatch, got.HookSpecificOutput.AdditionalContext)
+	}
+}
+
+// checkHookLacks runs "lt hook NAME" with the given stdin JSON and asserts
+// that the additionalContext text does not contain unwanted.
+func (w *world) checkHookLacks(name, hook, stdin, unwanted string) {
+	w.t.Helper()
+	out, errOut, code := w.run(stdin, nil, "hook", hook)
+	if code != 0 {
+		w.t.Errorf("%s: exit %d\nstderr: %s", name, code, errOut)
+		return
+	}
+	var got hookOutput
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		w.t.Errorf("%s: output is not hook JSON: %v\n%s", name, err, out)
+		return
+	}
+	if strings.Contains(got.HookSpecificOutput.AdditionalContext, unwanted) {
+		w.t.Errorf("%s: context contains %q:\n%s", name, unwanted, got.HookSpecificOutput.AdditionalContext)
 	}
 }
 
@@ -76,4 +100,32 @@ func TestHookSessionStart(t *testing.T) {
 	if code != 1 || !strings.Contains(errOut, "unknown hook") {
 		t.Errorf("unknown hook: exit %d, stderr %q", code, errOut)
 	}
+}
+
+func TestHookSyncProblems(t *testing.T) {
+	w := newWorld(t)
+	srv := jmaptest.New("personal")
+	defer srv.Close()
+	srv.Token = "required"
+	os.MkdirAll(w.store, 0o755)
+	writeConfig := func(token string) {
+		os.WriteFile(filepath.Join(w.store, "config.yaml"), []byte(fmt.Sprintf(
+			"server: %s\ntoken: %q\ncollections:\n  personal: { account: personal }\nroutes:\n  - { match: \"*\", collection: personal }\n",
+			srv.SessionURL(), token)), 0o600)
+	}
+	input := `{"session_id":"s1","cwd":"` + w.cwd + `","hook_event_name":"SessionStart","source":"startup"}`
+
+	writeConfig("")
+	w.check("add", 0, idPat, "add", "Thing")
+	w.check("sync fails", 1, `personal: .*401`, "sync")
+	if out, _, code := w.run("", nil, "sync", "-status"); code != 1 || !strings.Contains(out, "the last sync, at") {
+		t.Errorf("sync -status after a failure: exit %d\n%s", code, out)
+	}
+	w.checkHook("problems reported", "session-start", input, "SessionStart",
+		`(?s)Sync is not working.*personal: the last sync, at .* failed: .*401`)
+
+	writeConfig("required")
+	w.check("sync works", 0, `personal: sent`, "sync")
+	w.check("status is clean", 0, `^personal: last sync .*, 0 waiting, 0 refused\n$`, "sync", "-status")
+	w.checkHookLacks("no problems", "session-start", input, "Sync is not working")
 }

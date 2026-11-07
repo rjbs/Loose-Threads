@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -411,4 +412,63 @@ func checkPublish(t *testing.T, collection string) {
 func TestSyncPublishLocalProject(t *testing.T) {
 	checkPublish(t, "personal")
 	checkPublish(t, "work")
+}
+
+// checkProblems asserts that a sync status, as of later after now, has
+// one problem for each of want, matching it as a regexp.
+func checkProblems(t *testing.T, what string, s *Store, collection string, later time.Duration, want ...string) {
+	t.Helper()
+	st, err := s.SyncStatus(collection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := st.Problems(time.Now().Add(later))
+	if len(got) != len(want) {
+		t.Errorf("%s: problems %q, want %d", what, got, len(want))
+		return
+	}
+	for i, w := range want {
+		if !regexp.MustCompile(w).MatchString(got[i]) {
+			t.Errorf("%s: problem %q does not match %q", what, got[i], w)
+		}
+	}
+}
+
+func TestSyncStatus(t *testing.T) {
+	srv := newServer(t)
+	a := machine(t, srv)
+	th := addThread(t, a, "p", "Title\n")
+	checkProblems(t, "never synced", a, "personal", 0, "never synced; 2 changes are waiting")
+
+	sync(t, a, "personal")
+	checkProblems(t, "synced", a, "personal", 0)
+	checkProblems(t, "synced, much later", a, "personal", 2*time.Hour)
+
+	appendTo(t, a, "p", th.ID, "a note")
+	checkProblems(t, "a change waiting", a, "personal", 0)
+	checkProblems(t, "a change waiting too long", a, "personal", 2*time.Hour, `no sync since .*; 1 change is waiting`)
+
+	srv.Token = "required"
+	if _, err := a.Sync(context.Background(), "personal"); err == nil {
+		t.Fatal("sync without the required token succeeded")
+	}
+	checkProblems(t, "failing", a, "personal", 0, `failed: jmap: session .*401.*The last success was at .*; 1 change is waiting`)
+
+	srv.Token = ""
+	sync(t, a, "personal")
+	checkProblems(t, "recovered", a, "personal", 0)
+
+	// The server refusing a change leaves it pending, with the reason.
+	appendTo(t, a, "p", th.ID, "another note")
+	a.db.Exec(`UPDATE objects SET error = 'invalidProperties' WHERE pending > 0`)
+	checkProblems(t, "refused", a, "personal", 0, "refused by the server: Task "+th.ID+": invalidProperties")
+}
+
+func TestSyncStatusNeverSucceeded(t *testing.T) {
+	srv := newServer(t)
+	srv.Token = "required"
+	a := machine(t, srv)
+	addThread(t, a, "p", "Title\n")
+	a.Sync(context.Background(), "personal")
+	checkProblems(t, "never succeeded", a, "personal", 0, "It has never synced successfully")
 }

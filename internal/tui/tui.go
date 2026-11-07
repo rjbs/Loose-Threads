@@ -57,6 +57,10 @@ type Model struct {
 	// that a change by any process triggers a reload.
 	generation int64
 
+	// syncTrouble names the collections whose syncing has problems, for
+	// the footer, or is empty.
+	syncTrouble string
+
 	// sync, if set, starts a background sync of the named collection, or
 	// of every collection when the name is empty.
 	sync func(collection string)
@@ -196,6 +200,7 @@ func (m *Model) loadThreads() error {
 		m.list.Select(len(visible) - 1)
 	}
 	m.generation, _ = m.store.Generation()
+	m.syncTrouble = syncTrouble(m.store)
 	m.layout()
 	return nil
 }
@@ -291,6 +296,26 @@ func (m *Model) syncAll() {
 	if m.sync != nil {
 		m.sync("")
 	}
+}
+
+// syncTrouble summarizes, in a few words, which collections have sync
+// problems.  Every sync records its outcome, which changes the store's
+// generation, so this is recomputed whenever the browser reloads.
+func syncTrouble(s *store.Store) string {
+	sts, err := s.SyncStatuses()
+	if err != nil {
+		return "sync status unreadable: " + err.Error()
+	}
+	var names []string
+	for _, st := range sts {
+		if len(st.Problems(time.Now())) > 0 {
+			names = append(names, st.Collection)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return "sync problems: " + strings.Join(names, ", ") + " (lt sync -status)"
 }
 
 // poll reloads if the store has changed since the last load.
@@ -991,6 +1016,8 @@ func (m *Model) frame(header, body, footer string) string {
 		footer = th.Error.Render(m.err.Error())
 	} else if m.status != "" && m.mode != modeAdd && m.mode != modeNote {
 		footer = th.Status.Render(m.status) + "   " + footer
+	} else if m.syncTrouble != "" && m.mode != modeAdd && m.mode != modeNote {
+		footer = th.Error.Render(m.syncTrouble) + "   " + footer
 	}
 	bodyH := m.bodyHeight()
 	body = lipgloss.NewStyle().Height(bodyH).MaxHeight(bodyH).Render(body)

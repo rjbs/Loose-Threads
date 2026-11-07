@@ -119,6 +119,7 @@ func hookSessionStart(in hookInput) error {
 	}
 	defer s.Close()
 	syncAllInBackground(s)
+	writeSyncProblems(&b, s)
 	p, err := s.LookupProject(id.ID)
 	if err != nil {
 		b.WriteString("No threads have been recorded for this project yet.\n")

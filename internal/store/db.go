@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS counters (
 	value INTEGER NOT NULL
 );
 INSERT OR IGNORE INTO counters VALUES ('seq', 0), ('generation', 0);
+
+CREATE TABLE IF NOT EXISTS sync_status (
+	collection TEXT PRIMARY KEY,
+	attempted  TEXT NOT NULL,
+	succeeded  TEXT,
+	error      TEXT NOT NULL
+);
 `
 
 const (

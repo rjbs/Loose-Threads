@@ -82,6 +82,7 @@ The token is a secret, so keep `config.yaml` readable only by you.
 
     lt sync                     # pull, push, pull every collection with an account
     lt sync -collection work
+    lt sync -status             # how syncing has gone, without syncing
     lt move-project work        # move this project into another collection
 
 Writes start a sync in the background (`lt add`, `done`, `abandon`,
@@ -90,6 +91,12 @@ thread is on the server within seconds of being recorded.  The
 SessionStart hook starts a sync without waiting for it, and the
 browser syncs every minute.  Set `LOOSETHREADS_NO_SYNC=1` to sync only
 by hand.
+
+Each sync records how it went.  When the last sync of a collection
+failed, the server refused a change, or changes have waited over an
+hour with no sync, the SessionStart hook says so (and asks the agent to
+tell you), the browser's footer names the collection, and
+`lt sync -status` gives the details.
 
 The same thread changed on two machines merges by property: the state
 from one and a retitle from the other both survive, and notes appended
