@@ -378,3 +378,37 @@ func TestSyncToken(t *testing.T) {
 	checkToken(t, "secret", "", false)
 	checkToken(t, "", "", true)
 }
+
+// checkPublish asserts that threads kept in the local collection reach
+// no server until their project is moved into a collection that syncs,
+// and then reach it with their notes and states intact.
+func checkPublish(t *testing.T, collection string) {
+	t.Helper()
+	srv := newServer(t)
+	a, b := machine(t, srv), machine(t, srv)
+	p, err := a.ProjectIn("private", "Private", LocalCollection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	th := &thread.Thread{State: thread.Open, Body: "Kept here\n"}
+	if err := a.Create(p, th, now); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(t, a, "private", th.ID, "a local note")
+	sync(t, a, collection)
+	checkServerCount(t, srv, collection, "Task", 0)
+
+	if _, err := a.MoveProject("private", collection); err != nil {
+		t.Fatal(err)
+	}
+	sync(t, a, collection)
+	sync(t, b, collection)
+	checkServerCount(t, srv, collection, "Task", 1)
+	checkThread(t, "published", "private", th.ID, thread.Open, []string{"Kept here", "a local note"}, a, b)
+	checkNothingPending(t, a)
+}
+
+func TestSyncPublishLocalProject(t *testing.T) {
+	checkPublish(t, "personal")
+	checkPublish(t, "work")
+}
