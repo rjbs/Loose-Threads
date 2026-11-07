@@ -422,6 +422,206 @@ independently and syncing later do not collide.
 Migration from the current layout: move existing project directories
 under `local/`.
 
+## Proposed: JMAP for Tasks storage
+
+Proposed 2026-11-06, not yet built.  Threads move from Markdown files
+synced by git to JMAP Task objects, held in a local cache and synced
+with a JMAP for Tasks server (TaskMaster, in practice).  The goal is
+better human interfaces: a server gives other clients, web and mobile
+included, something to talk to, and keeping the data in the orthodox
+JMAP shape means general Tasks tools work on it too.  Everything in
+this section supersedes the file-and-git storage above once built.
+
+### What agents see
+
+Nothing changes for the agent.  A survey of every Claude Code
+transcript on the laptop (2026-11-06, excluding this project's own
+development) found about 1,290 `lt` invocations across 113 sessions,
+no use of the MCP server, and no reads or edits of thread files at
+all; the only direct contact with the store was one session debugging
+the `lt edit` hang.  Agents almost always pass the full date-prefixed
+id, copied from session-start context or `lt add` output, and never
+use `-json`.  So the CLI's verbs, output, and id format are the whole
+agent interface, and the storage under them can change freely.
+
+### The local cache
+
+Every `lt` command reads and writes a local cache and never waits on
+the network.  This keeps the session-start hook instant, keeps `lt add`
+working on a VM with no connection, and lets local behavior be tested
+without a server.  Sync is a separate step, tested on its own.
+
+The model is Jinx's (`~/code/hub/Jinx/doc/plan.md`), ported rather
+than reused, and cut down to what we need: full mirroring of two
+types, no windowed mode, no blobs.  Each object has:
+
+* a **server version**: the last object fetched from the server,
+  whole, including properties `lt` does not model, or null if the
+  server has never seen it;
+* a **local value**: what `lt` reads, equal to the server version
+  unless a change is pending;
+* at most one **pending entry**, which records that the object was
+  created, changed, or destroyed, but stores no patch.
+
+Reads see only local values, so a pending change reads exactly like a
+synced one.  At sync-out, the patch is the diff from server version to
+local value, so several edits collapse into one patch.  At sync-in, an
+object with a pending change is **rebased**: the patch from its old
+server version to its local value is applied to the newly fetched
+object, a pending local property wins, and everything else takes the
+server's value.
+
+There is no long-running engine.  `lt` is a short-lived process, and
+several may run at once (a few agent sessions and the browser), so
+writers coordinate through short transactions and claims on pending
+entries, as in Jinx, and there is no set of live objects to keep in
+step.  A write starts a detached sync; the session-start hook shows the
+cache and starts a detached sync rather than waiting for one, so its
+list may be one sync behind.  The browser syncs on its poll loop.
+
+### Appends and the description resolver
+
+Rebase works per property, and the body with all of its appended notes
+is one property, `description`.  Left alone, a note appended on one
+machine would replace the description on the server, dropping a note
+appended on another.  Appends are the most common write `lt` makes, so
+`description` gets a resolver.  Given the base (the server version the
+local edit started from), the new server value, and the local value:
+
+* if the server value equals the base, the local value wins, as in any
+  rebase;
+* if the local value begins with the base, the result is the server
+  value followed by what the local value added after the base;
+* otherwise both sides really edited, the local value wins, and the
+  conflict is recorded.
+
+The prefix is taken against the base, never against the server value.
+Two notes written the same day share their opening characters
+(`\n\n**2026-11-06 14:0`), so a common prefix of server and local
+values would run into the notes themselves and cut the local one in
+half.
+
+When both sides appended, the server's note lands first even if the
+local one was written earlier.  That is acceptable.
+
+Full edits through `lt edit` (write a temp file, edit, read it back,
+update the Task) stay possible.  They are rare, and the resolver's
+third case is what catches one that collides with an append.
+
+### Mapping
+
+| `lt` concept           | JMAP for Tasks                                              |
+|------------------------|-------------------------------------------------------------|
+| collection             | account: `{server, accountId}` in `config.yaml`             |
+| project                | TaskList with `lt.semiotic.systems:project`; `name` is display only |
+| thread id              | Task `uid`                                                  |
+| title                  | `title`                                                     |
+| body and notes         | `description`, `text/plain`                                 |
+| state                  | `progress` (below)                                          |
+| `created`              | `created`, falling back to `updated` when absent            |
+| `closed`               | `progressUpdated`                                           |
+| `session`              | `lt.semiotic.systems:session`, nullable                     |
+| `origin`               | keyword `lt.semiotic.systems:origin:agent`; absent means unknown |
+| `transcript`           | dropped                                                     |
+
+Vendor properties and keywords are prefixed `lt.semiotic.systems:`,
+following RFC 8984's owning-domain convention.  Origin is a keyword of
+the form `PREFIX:origin:VALUE` so that more keywords can join it later.
+
+`transcript` was never populated in practice (0 of 522 threads had
+it), held a path meaningful on one machine only, and can be found
+from the session id anyway.
+
+States map to `progress` as: `open` from `needs-action` or
+`in-process`, `done` from `completed`, `abandoned` from `cancelled` or
+`failed`.  `lt` writes only `needs-action`, `completed`, and
+`cancelled`.
+
+### Thread identity
+
+The thread id becomes the Task's `uid`, which JSCalendar makes the
+client's identity for the object.  The server's id stays inside the
+cache.  Because `lt` mints the uid locally, a create whose response is
+lost can be retried safely: before resending, sync looks the uid up
+and adopts the existing Task if found.  This is also what makes
+migration restartable.
+
+### Projects as TaskLists
+
+A project is a TaskList.  Its identity is the vendor property
+`lt.semiotic.systems:project`, holding the project id, and not its
+`name`, which any client may change; identity in the name would let a
+rename in another client split the project in two.
+
+TaskLists have nothing like `uid`, so two machines that both start a
+new project offline will each create a list for it.  Two defenses:
+before creating a list, sync-out fetches all TaskLists (there are only
+a few hundred) and adopts a matching one; and sync-in merges
+duplicates, keeping the list with the lowest id, moving the other's
+Tasks into it, and destroying the empty one.  The rule is
+deterministic, so two machines merging at once agree.
+
+A thread created offline in a project created offline refers to a
+TaskList the server has never seen.  The Task's `taskListId` holds the
+pending list's local key, TaskLists always sync out before Tasks, and
+the key is rewritten when the real id arrives.  Jinx deferred
+cross-type references to pending creates; with two types and a fixed
+order, we do not need to.
+
+Moves follow:
+
+* `lt move` (a thread to another project) changes `taskListId`.
+* `lt rehome` changes the list's project property, or, when the target
+  list already exists, goes through the duplicate merge.
+* `lt move-project` (to another collection) is a move between
+  accounts: `Task/copy` if the server has it, otherwise create in the
+  new account and destroy in the old.  `uid` keeps identity across
+  either.
+
+### Foreign lists and tasks
+
+`lt` ignores TaskLists without the project property, so the default
+list TaskMaster creates in each account, or any list made by another
+client, is harmless.  A Task in one of our lists is a thread whether
+or not `lt` created it.  Its session and origin are null, its id is
+whatever uid its client chose (probably a UUID, ugly but working, since
+ids are matched by suffix), and its `created` may need the `updated`
+fallback.
+
+`lt` writes descriptions as `text/plain`.  If one turns up with any
+other content type, `lt append` refuses rather than append Markdown to
+HTML.  This is not expected to happen.
+
+### Servers and accounts
+
+Collections become accounts, likely two (personal and work) on one
+TaskMaster.  Keeping them separate is tidiness, not policy.  TaskMaster
+authenticates by loopback or Tailscale login only, so a VM needs to be
+on the tailnet, behind a tunnel, or talking to a TaskMaster with some
+new credential type; worst case, everything goes in one account over
+Tailscale.  This is tracked as a thread rather than decided here.
+
+### Testing
+
+Local reads and writes test against the cache alone.  Sync tests run
+against an in-process scripted JMAP server serving Task and TaskList,
+modeled on Jinx's scripted-server tier, including `Task/changes`
+answering `cannotCalculateChanges`, which forces a full resync.
+
+### Migration
+
+Each existing thread file becomes a pending create in the cache, its
+project's list a pending TaskList create, and the first sync pushes
+them.  Since `uid` is the identity, a migration interrupted partway can
+simply be run again.
+
+### Still to decide
+
+* The cache's storage: SQLite in WAL mode (a pure-Go driver avoids
+  cgo) is the leading candidate, given several concurrent writers.
+* Whether `uid` is the bare thread id or carries a prefix.  Bare is
+  probably fine, since the account belongs to Loose Threads.
+
 ## Open questions
 
 * **Same-second ordering.**  `created` has one-second precision, so a
