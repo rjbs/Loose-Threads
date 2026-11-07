@@ -27,10 +27,23 @@ type Server struct {
 	// ForgetChanges makes every /changes call fail with
 	// cannotCalculateChanges.
 	ForgetChanges bool
+
+	// DropRequest, if not zero, is the number of an API request, counting
+	// from one as Requests does, that is carried out but answered with an
+	// error, as if its response were lost.
+	DropRequest int
+
+	// Requests counts API requests.
+	Requests int
+
+	// The limits the server advertises and enforces.  They start out as
+	// the package defaults.
+	MaxCallsInRequest int
+	MaxObjectsInGet   int
 }
 
-// The limits the server advertises and enforces are small, so that tests
-// with a handful of objects exercise a client's chunking.
+// The default limits are small, so that tests with a handful of objects
+// exercise a client's chunking.
 const (
 	MaxCallsInRequest = 4
 	MaxObjectsInGet   = 3
@@ -55,7 +68,7 @@ type object struct {
 
 // New starts a server with the given account ids.
 func New(accounts ...string) *Server {
-	s := &Server{accounts: map[string]*account{}}
+	s := &Server{accounts: map[string]*account{}, MaxCallsInRequest: MaxCallsInRequest, MaxObjectsInGet: MaxObjectsInGet}
 	for _, a := range accounts {
 		s.accounts[a] = &account{types: map[string]*store{
 			"Task":     {objects: map[string]*object{}, gone: map[string]int{}},
@@ -73,6 +86,8 @@ func New(accounts ...string) *Server {
 func (s *Server) SessionURL() string { return s.URL + "/session" }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	accts := map[string]any{}
 	for id := range s.accounts {
 		accts[id] = map[string]any{"name": id, "isPersonal": true, "isReadOnly": false}
@@ -82,8 +97,8 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 		"accounts": accts,
 		"capabilities": map[string]any{
 			"urn:ietf:params:jmap:core": map[string]any{
-				"maxCallsInRequest": MaxCallsInRequest,
-				"maxObjectsInGet":   MaxObjectsInGet,
+				"maxCallsInRequest": s.MaxCallsInRequest,
+				"maxObjectsInGet":   s.MaxObjectsInGet,
 				"maxObjectsInSet":   1000,
 			},
 		},
@@ -98,13 +113,14 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if len(req.MethodCalls) > MaxCallsInRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Requests++
+	if len(req.MethodCalls) > s.MaxCallsInRequest {
 		w.WriteHeader(400)
 		json.NewEncoder(w).Encode(map[string]any{"type": "urn:ietf:params:jmap:error:limit", "limit": "maxCallsInRequest"})
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var out [][3]any
 	for _, c := range req.MethodCalls {
 		var name, id string
@@ -112,10 +128,45 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(c[0], &name)
 		json.Unmarshal(c[1], &args)
 		json.Unmarshal(c[2], &id)
-		rname, rargs := s.call(name, args)
+		rname, rargs := "error", map[string]any{"type": "invalidResultReference"}
+		if resolveReferences(args, out) {
+			rname, rargs = s.call(name, args)
+		}
 		out = append(out, [3]any{rname, rargs, id})
 	}
+	if s.Requests == s.DropRequest {
+		http.Error(w, "response lost", http.StatusBadGateway)
+		return
+	}
 	json.NewEncoder(w).Encode(map[string]any{"methodResponses": out})
+}
+
+// resolveReferences replaces each "#name" argument, a result reference,
+// with the value it refers to in an earlier response, and reports whether
+// they all resolved.  Paths are only "/" and a property name.
+func resolveReferences(args map[string]any, earlier [][3]any) bool {
+	for k, v := range args {
+		name, ok := strings.CutPrefix(k, "#")
+		if !ok {
+			continue
+		}
+		ref, _ := v.(map[string]any)
+		prop, ok := strings.CutPrefix(fmt.Sprint(ref["path"]), "/")
+		if !ok {
+			return false
+		}
+		found := false
+		for _, r := range earlier {
+			if r[2] == ref["resultOf"] && r[0] == ref["name"] {
+				args[name], found = r[1].(map[string]any)[prop], true
+			}
+		}
+		if !found {
+			return false
+		}
+		delete(args, k)
+	}
+	return true
 }
 
 func methodError(typ string) (string, map[string]any) {
@@ -135,7 +186,7 @@ func (s *Server) call(name string, args map[string]any) (string, map[string]any)
 	}
 	switch method {
 	case "get":
-		if ids, ok := args["ids"].([]any); (ok && len(ids) > MaxObjectsInGet) || (args["ids"] == nil && typ == "Task" && len(st.objects) > MaxObjectsInGet) {
+		if ids, ok := args["ids"].([]any); (ok && len(ids) > s.MaxObjectsInGet) || (args["ids"] == nil && typ == "Task" && len(st.objects) > s.MaxObjectsInGet) {
 			return methodError("requestTooLarge")
 		}
 		return name, st.get(acctID, args)
@@ -250,23 +301,42 @@ func (st *store) changes(acct string, args map[string]any) (string, map[string]a
 	if err != nil || since > st.state {
 		return methodError("cannotCalculateChanges")
 	}
-	created, updated, destroyed := []any{}, []any{}, []any{}
+
+	// Each object changed since then is reported once, as of its latest
+	// change.  With maxChanges, the oldest changes come first, and the
+	// new state is that of the last change reported.
+	type change struct {
+		id   string
+		at   int
+		kind string
+	}
+	var all []change
 	for id, o := range st.objects {
 		switch {
 		case o.created > since:
-			created = append(created, id)
+			all = append(all, change{id, o.modified, "created"})
 		case o.modified > since:
-			updated = append(updated, id)
+			all = append(all, change{id, o.modified, "updated"})
 		}
 	}
 	for id, at := range st.gone {
 		if at > since {
-			destroyed = append(destroyed, id)
+			all = append(all, change{id, at, "destroyed"})
 		}
 	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at < all[j].at })
+	newState, more := st.state, false
+	if limit, ok := args["maxChanges"].(float64); ok && int(limit) < len(all) {
+		all, more = all[:int(limit)], true
+		newState = all[len(all)-1].at
+	}
+	lists := map[string][]any{"created": {}, "updated": {}, "destroyed": {}}
+	for _, c := range all {
+		lists[c.kind] = append(lists[c.kind], c.id)
+	}
 	return "changes", map[string]any{
-		"accountId": acct, "oldState": strconv.Itoa(since), "newState": st.stateString(),
-		"hasMoreChanges": false, "created": created, "updated": updated, "destroyed": destroyed,
+		"accountId": acct, "oldState": strconv.Itoa(since), "newState": strconv.Itoa(newState),
+		"hasMoreChanges": more, "created": lists["created"], "updated": lists["updated"], "destroyed": lists["destroyed"],
 	}
 }
 

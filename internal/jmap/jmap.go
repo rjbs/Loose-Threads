@@ -194,6 +194,44 @@ func (c *Client) Do(ctx context.Context, calls ...Call) ([]Response, error) {
 	return out.MethodResponses, nil
 }
 
+// Batch sends groups of calls in as few requests as maxCallsInRequest
+// allows, and returns the responses in order.  A group is never split
+// across requests, so calls within one may refer to each other's
+// results.
+func (c *Client) Batch(ctx context.Context, groups ...[]Call) ([]Response, error) {
+	var out []Response
+	var calls []Call
+	flush := func() error {
+		if len(calls) == 0 {
+			return nil
+		}
+		rs, err := c.Do(ctx, calls...)
+		if err != nil {
+			return err
+		}
+		if len(rs) != len(calls) {
+			return fmt.Errorf("jmap: %d calls, but %d responses", len(calls), len(rs))
+		}
+		out, calls = append(out, rs...), nil
+		return nil
+	}
+	for _, g := range groups {
+		if len(g) > c.MaxCallsInRequest {
+			return nil, fmt.Errorf("jmap: %d related calls, but the server allows only %d in a request", len(g), c.MaxCallsInRequest)
+		}
+		if len(calls)+len(g) > c.MaxCallsInRequest {
+			if err := flush(); err != nil {
+				return nil, err
+			}
+		}
+		calls = append(calls, g...)
+	}
+	if err := flush(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // One sends a single call and returns its response's arguments, turning
 // a method-level error into a Go error.
 func (c *Client) One(ctx context.Context, name string, args map[string]any) (map[string]any, error) {
