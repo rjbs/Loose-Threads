@@ -268,3 +268,24 @@ func TestSyncUnsyncedCollection(t *testing.T) {
 		t.Error("syncing the local collection should fail")
 	}
 }
+
+func TestSyncManyThreads(t *testing.T) {
+	srv := newServer(t)
+	a, b := machine(t, srv), machine(t, srv)
+	var want []string
+	for i := range 2*jmaptest.MaxObjectsInGet + 1 {
+		title := fmt.Sprintf("Thread %02d", i)
+		addThread(t, a, "p", title+"\n")
+		want = append(want, title)
+	}
+	syncAll(t, a, b)
+	checkTitles(t, b, "p", want...)
+
+	// A machine that starts from nothing, with a server that cannot say
+	// what changed, both fetch everything in pages and chunks.
+	srv.ForgetChanges = true
+	c := machine(t, srv)
+	sync(t, c, "personal")
+	checkTitles(t, c, "p", want...)
+	checkServerCount(t, srv, "personal", "Task", len(want))
+}

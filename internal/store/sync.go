@@ -241,38 +241,38 @@ func (sy *syncer) adopt(ctx context.Context, typ string, rows []*row) error {
 			}
 		}
 	case typeTask:
-		var calls []jmap.Call
-		for _, r := range creates {
-			calls = append(calls, jmap.Call{Name: "Task/query", ID: fmt.Sprint(r.key), Args: map[string]any{
-				"accountId": sy.account,
-				"filter":    map[string]any{"uid": r.local["uid"]},
-			}})
+		idFor := map[string]int64{}
+		var ids []string
+		for _, ch := range jmap.Chunks(len(creates), sy.c.MaxCallsInRequest) {
+			var calls []jmap.Call
+			for _, r := range creates[ch[0]:ch[1]] {
+				calls = append(calls, jmap.Call{Name: "Task/query", ID: fmt.Sprint(r.key), Args: map[string]any{
+					"accountId": sy.account,
+					"filter":    map[string]any{"uid": r.local["uid"]},
+				}})
+			}
+			rs, err := sy.c.Do(ctx, calls...)
+			if err != nil {
+				return err
+			}
+			for i, resp := range rs {
+				if e := resp.Err(); e != nil {
+					return fmt.Errorf("Task/query: %w", e)
+				}
+				if found, _ := resp.Args["ids"].([]any); len(found) > 0 {
+					id, _ := found[0].(string)
+					idFor[id] = creates[ch[0]+i].key
+					ids = append(ids, id)
+				}
+			}
 		}
-		rs, err := sy.c.Do(ctx, calls...)
+		got, err := sy.get(ctx, typeTask, ids)
 		if err != nil {
 			return err
 		}
-		idFor := map[string]int64{}
-		var ids []string
-		for i, resp := range rs {
-			if e := resp.Err(); e != nil {
-				return fmt.Errorf("Task/query: %w", e)
-			}
-			if found, _ := resp.Args["ids"].([]any); len(found) > 0 {
-				id, _ := found[0].(string)
-				idFor[id] = creates[i].key
-				ids = append(ids, id)
-			}
-		}
-		if len(ids) > 0 {
-			args, err := sy.c.One(ctx, "Task/get", map[string]any{"accountId": sy.account, "ids": ids})
-			if err != nil {
-				return fmt.Errorf("Task/get: %w", err)
-			}
-			for _, o := range objects(args["list"]) {
-				id, _ := o["id"].(string)
-				found[idFor[id]] = o
-			}
+		for _, o := range got {
+			id, _ := o["id"].(string)
+			found[idFor[id]] = o
 		}
 	}
 	if len(found) == 0 {
@@ -608,13 +608,9 @@ func (sy *syncer) inType(ctx context.Context, typ string) error {
 				ids = append(ids, v)
 			}
 		}
-		var fetched []patch.Object
-		if len(ids) > 0 {
-			got, err := sy.c.One(ctx, typ+"/get", map[string]any{"accountId": sy.account, "ids": ids})
-			if err != nil {
-				return fmt.Errorf("%s/get: %w", typ, err)
-			}
-			fetched = objects(got["list"])
+		fetched, err := sy.get(ctx, typ, ids)
+		if err != nil {
+			return err
 		}
 		newState, _ := args["newState"].(string)
 		if err := sy.apply(typ, fetched, asList(args["destroyed"]), nil, newState); err != nil {
@@ -627,21 +623,68 @@ func (sy *syncer) inType(ctx context.Context, typ string) error {
 	}
 }
 
+// get fetches objects by id, in requests no larger than the server
+// allows.
+func (sy *syncer) get(ctx context.Context, typ string, ids []string) ([]patch.Object, error) {
+	var out []patch.Object
+	for _, ch := range jmap.Chunks(len(ids), sy.c.MaxObjectsInGet) {
+		got, err := sy.c.One(ctx, typ+"/get", map[string]any{"accountId": sy.account, "ids": ids[ch[0]:ch[1]]})
+		if err != nil {
+			return nil, fmt.Errorf("%s/get: %w", typ, err)
+		}
+		out = append(out, objects(got["list"])...)
+	}
+	return out, nil
+}
+
 // resync fetches every object of a type, for a first sync or when the
 // server cannot say what changed since our state.  Objects the server no
 // longer has are dropped, except pending creates, which it has never had.
+//
+// TaskLists are few and have no /query, so they come in one /get.  Tasks
+// may be many, so their ids come from Task/query, a page at a time, and
+// are fetched in chunks.  The state recorded is the one from before the
+// first page, so anything changed during the resync is fetched again on
+// the next sync rather than missed.  -- claude, 2026-11-06
 func (sy *syncer) resync(ctx context.Context, typ string) error {
-	got, err := sy.c.One(ctx, typ+"/get", map[string]any{"accountId": sy.account, "ids": nil})
-	if err != nil {
-		return fmt.Errorf("%s/get: %w", typ, err)
+	var fetched []patch.Object
+	var st string
+	if typ == typeTaskList {
+		got, err := sy.c.One(ctx, typ+"/get", map[string]any{"accountId": sy.account, "ids": nil})
+		if err != nil {
+			return fmt.Errorf("%s/get: %w", typ, err)
+		}
+		fetched = objects(got["list"])
+		st, _ = got["state"].(string)
+	} else {
+		got, err := sy.c.One(ctx, typ+"/get", map[string]any{"accountId": sy.account, "ids": []string{}})
+		if err != nil {
+			return fmt.Errorf("%s/get: %w", typ, err)
+		}
+		st, _ = got["state"].(string)
+		var ids []string
+		for {
+			q, err := sy.c.One(ctx, typ+"/query", map[string]any{
+				"accountId": sy.account, "position": len(ids), "limit": sy.c.MaxObjectsInGet,
+			})
+			if err != nil {
+				return fmt.Errorf("%s/query: %w", typ, err)
+			}
+			page := asList(q["ids"])
+			ids = append(ids, page...)
+			if len(page) == 0 || len(page) < sy.c.MaxObjectsInGet {
+				break
+			}
+		}
+		if fetched, err = sy.get(ctx, typ, ids); err != nil {
+			return err
+		}
 	}
-	fetched := objects(got["list"])
 	keep := map[string]bool{}
 	for _, o := range fetched {
 		id, _ := o["id"].(string)
 		keep[id] = true
 	}
-	st, _ := got["state"].(string)
 	return sy.apply(typ, fetched, nil, keep, st)
 }
 

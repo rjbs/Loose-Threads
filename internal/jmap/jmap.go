@@ -24,6 +24,12 @@ type Client struct {
 	HTTP     *http.Client
 	APIURL   string
 	Accounts map[string]Account
+
+	// Limits from the Session's core capability.  Callers keep requests
+	// within them; Chunks helps.
+	MaxCallsInRequest int
+	MaxObjectsInGet   int
+	MaxObjectsInSet   int
 }
 
 // Account is an entry in the Session's accounts.
@@ -49,8 +55,13 @@ func Open(ctx context.Context, sessionURL string) (*Client, error) {
 		return nil, fmt.Errorf("jmap: session %s: %s: %s", sessionURL, resp.Status, bytes.TrimSpace(body))
 	}
 	var session struct {
-		APIURL   string             `json:"apiUrl"`
-		Accounts map[string]Account `json:"accounts"`
+		APIURL       string             `json:"apiUrl"`
+		Accounts     map[string]Account `json:"accounts"`
+		Capabilities map[string]struct {
+			MaxCallsInRequest int `json:"maxCallsInRequest"`
+			MaxObjectsInGet   int `json:"maxObjectsInGet"`
+			MaxObjectsInSet   int `json:"maxObjectsInSet"`
+		} `json:"capabilities"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
 		return nil, fmt.Errorf("jmap: decoding session: %w", err)
@@ -64,7 +75,30 @@ func Open(ctx context.Context, sessionURL string) (*Client, error) {
 		return nil, fmt.Errorf("jmap: bad apiUrl %q: %w", session.APIURL, err)
 	}
 	c.APIURL, c.Accounts = api.String(), session.Accounts
+	core := session.Capabilities[CoreCapability]
+	// RFC 8620 gives these suggested minimums, which serve as defaults for
+	// a server that does not say.
+	c.MaxCallsInRequest = orDefault(core.MaxCallsInRequest, 16)
+	c.MaxObjectsInGet = orDefault(core.MaxObjectsInGet, 500)
+	c.MaxObjectsInSet = orDefault(core.MaxObjectsInSet, 500)
 	return c, nil
+}
+
+func orDefault(n, def int) int {
+	if n > 0 {
+		return n
+	}
+	return def
+}
+
+// Chunks splits n items into consecutive [start, end) ranges of at most
+// size each.
+func Chunks(n, size int) [][2]int {
+	var out [][2]int
+	for start := 0; start < n; start += size {
+		out = append(out, [2]int{start, min(start+size, n)})
+	}
+	return out
 }
 
 // Call is one method call.  ID is its call id, which the response

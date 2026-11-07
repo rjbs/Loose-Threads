@@ -24,10 +24,17 @@ type Server struct {
 	mu       sync.Mutex
 	accounts map[string]*account
 
-	// ForgetChanges makes the next /changes call of each type fail with
+	// ForgetChanges makes every /changes call fail with
 	// cannotCalculateChanges.
 	ForgetChanges bool
 }
+
+// The limits the server advertises and enforces are small, so that tests
+// with a handful of objects exercise a client's chunking.
+const (
+	MaxCallsInRequest = 4
+	MaxObjectsInGet   = 3
+)
 
 type account struct {
 	types map[string]*store
@@ -70,7 +77,17 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	for id := range s.accounts {
 		accts[id] = map[string]any{"name": id, "isPersonal": true, "isReadOnly": false}
 	}
-	json.NewEncoder(w).Encode(map[string]any{"apiUrl": "/api", "accounts": accts})
+	json.NewEncoder(w).Encode(map[string]any{
+		"apiUrl":   "/api",
+		"accounts": accts,
+		"capabilities": map[string]any{
+			"urn:ietf:params:jmap:core": map[string]any{
+				"maxCallsInRequest": MaxCallsInRequest,
+				"maxObjectsInGet":   MaxObjectsInGet,
+				"maxObjectsInSet":   1000,
+			},
+		},
+	})
 }
 
 func (s *Server) api(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +96,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), 400)
+		return
+	}
+	if len(req.MethodCalls) > MaxCallsInRequest {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]any{"type": "urn:ietf:params:jmap:error:limit", "limit": "maxCallsInRequest"})
 		return
 	}
 	s.mu.Lock()
@@ -113,6 +135,9 @@ func (s *Server) call(name string, args map[string]any) (string, map[string]any)
 	}
 	switch method {
 	case "get":
+		if ids, ok := args["ids"].([]any); (ok && len(ids) > MaxObjectsInGet) || (args["ids"] == nil && typ == "Task" && len(st.objects) > MaxObjectsInGet) {
+			return methodError("requestTooLarge")
+		}
 		return name, st.get(acctID, args)
 	case "set":
 		return name, st.set(acctID, typ, args)
@@ -258,6 +283,11 @@ func (st *store) query(acct string, args map[string]any) map[string]any {
 			continue
 		}
 		ids = append(ids, id)
+	}
+	pos, _ := args["position"].(float64)
+	ids = ids[min(int(pos), len(ids)):]
+	if limit, ok := args["limit"].(float64); ok && int(limit) < len(ids) {
+		ids = ids[:int(limit)]
 	}
 	return map[string]any{"accountId": acct, "ids": ids, "queryState": st.stateString()}
 }
