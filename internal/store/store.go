@@ -287,7 +287,7 @@ func (s *Store) Create(p *Project, t *thread.Thread, now time.Time) error {
 		if err != nil {
 			return err
 		}
-		task["taskListId"] = listRef(list)
+		fileUnder(task, list)
 		r := &row{collection: list.collection, typ: typeTask, listKey: list.key}
 		return setLocal(tx, r, task)
 	})
@@ -333,12 +333,12 @@ func (s *Store) Move(from, to *Project, id string) error {
 }
 
 // moveTask puts the Task in r into list.  Within one collection that is a
-// change of taskListId.  Between collections, which are different JMAP
+// change of taskListIds.  Between collections, which are different JMAP
 // accounts, the Task is created anew in the list's collection and
 // destroyed in its old one; its uid carries its identity across.
 func moveTask(tx *sql.Tx, r *row, list *row) error {
 	task := patch.Clone(r.local)
-	task["taskListId"] = listRef(list)
+	fileUnder(task, list)
 	if r.collection == list.collection {
 		r.listKey = list.key
 		return setLocal(tx, r, task)

@@ -216,7 +216,7 @@ func checkTask(t *testing.T, th *thread.Thread, want string) {
 		t.Fatal(err)
 	}
 	w := mustObject(t, want)
-	w["taskListId"] = r.local["taskListId"]
+	w["taskListIds"] = r.local["taskListIds"]
 	if !patch.Equal(r.local, w) {
 		t.Errorf("task = %v\nwant %v", r.local, w)
 	}

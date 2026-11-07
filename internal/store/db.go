@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -283,7 +284,12 @@ func setLocal(tx *sql.Tx, r *row, local patch.Object) error {
 	return put(tx, r)
 }
 
-// listRef is how a Task's taskListId names the list with the given row:
+// A Task names the lists it belongs to in taskListIds, a map from list
+// id to true.  lt puts each Task in exactly one list; a Task filed by
+// another client in several belongs, for lt, to the first lt list among
+// them.
+
+// listRef is how a Task's taskListIds names the list with the given row:
 // the list's JMAP id once it has one, and until then a creation id made
 // from its local key, rewritten when the list is created on the server.
 func listRef(list *row) string {
@@ -296,3 +302,32 @@ func listRef(list *row) string {
 func creationRef(key int64) string { return fmt.Sprintf("#k%d", key) }
 
 func isCreationRef(s string) bool { return strings.HasPrefix(s, "#k") }
+
+// listRefs returns the list ids a Task names, sorted.
+func listRefs(task patch.Object) []string {
+	m, _ := task["taskListIds"].(patch.Object)
+	var refs []string
+	for ref, v := range m {
+		if v == true {
+			refs = append(refs, ref)
+		}
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+// hasCreationRef reports whether a Task names a list not yet created on
+// the server, so it cannot be sent yet.
+func hasCreationRef(task patch.Object) bool {
+	for _, ref := range listRefs(task) {
+		if isCreationRef(ref) {
+			return true
+		}
+	}
+	return len(listRefs(task)) == 0
+}
+
+// fileUnder makes list the one list task belongs to.
+func fileUnder(task patch.Object, list *row) {
+	task["taskListIds"] = patch.Object{listRef(list): true}
+}

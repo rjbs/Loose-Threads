@@ -49,7 +49,7 @@ func newWorld(t *testing.T) *world {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	w.env = []string{"LOOSETHREADS_HOME=" + w.store, "PATH=" + os.Getenv("PATH"), "HOME=" + base, "LOOSETHREADS_NO_PUSH=1"}
+	w.env = []string{"LOOSETHREADS_HOME=" + w.store, "PATH=" + os.Getenv("PATH"), "HOME=" + base, "LOOSETHREADS_NO_SYNC=1"}
 	return w
 }
 
