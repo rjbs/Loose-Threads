@@ -80,25 +80,29 @@ func (s *Store) Sync(ctx context.Context, collection string) (SyncResult, error)
 	}
 	sy := &syncer{s: s, c: c, collection: collection, account: account, res: &res}
 
-	// Each round pulls before it pushes as well as after.  Rebase happens
-	// only on the way in, and a pending description sent without it would
+	// Sync pulls before it pushes as well as after.  Rebase happens only
+	// on the way in, and a pending description sent without it would
 	// replace notes appended elsewhere since our last pull; pulling first
 	// narrows that window to the time between two requests.  The pull
-	// after the push brings back what the server made of our changes.
-	// -- claude, 2026-11-06
+	// that rides along with the push brings back what the server made of
+	// our changes.
+	//
+	// Pulling first is also what makes a create safe to retry.  If a
+	// create's response is lost, the next sync's pull brings the object
+	// back: a Task matches its pending create by uid, and a TaskList is a
+	// duplicate of its pending create, which is absorbed into it.
+	// -- claude, 2026-11-07
+	if err := sy.in(ctx); err != nil {
+		return res, err
+	}
+	// A list created here for a project the pull just brought in from
+	// another machine is absorbed now, before it is ever sent.
+	if _, err := sy.mergeDuplicates(); err != nil {
+		return res, err
+	}
 	for range syncRounds {
-		if err := sy.in(ctx); err != nil {
-			return res, err
-		}
-		// A list created here for a project the pull just brought in from
-		// another machine is absorbed now, before it is ever sent.
-		if _, err := sy.mergeDuplicates(); err != nil {
-			return res, err
-		}
-		if err := sy.out(ctx); err != nil {
-			return res, err
-		}
-		if err := sy.in(ctx); err != nil {
+		pushed, err := sy.out(ctx)
+		if err != nil || !pushed {
 			return res, err
 		}
 		merged, err := sy.mergeDuplicates()
@@ -161,13 +165,20 @@ func (sy *syncer) pendingRows(typ string) ([]*row, error) {
 	return queryRows(sy.s.db, `collection = ? AND type = ? AND pending > 0 ORDER BY pending`, sy.collection, typ)
 }
 
-// out sends pending changes: TaskList creates and updates first, so new
-// Tasks can name their lists; then Tasks; then TaskList destroys, which
-// come last because a list must be emptied before it is destroyed.
-func (sy *syncer) out(ctx context.Context) error {
+// out sends pending changes and pulls what the server made of them.  It
+// reports whether it sent anything; if not, it sends no request at all.
+//
+// TaskList creates and updates go first, in a request of their own, so
+// that a Task filed under a new list can name it by its real id.  One
+// more request then carries the Task changes, the TaskList destroys
+// (last, because a list must be emptied before it is destroyed), and a
+// pull.  The calls in a request run in order, so the pull sees what the
+// sets did.  List changes are rare, so a push is usually one request.
+// -- claude, 2026-11-07
+func (sy *syncer) out(ctx context.Context) (bool, error) {
 	lists, err := sy.pendingRows(typeTaskList)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var listChanges, listDestroys []*row
 	for _, r := range lists {
@@ -177,174 +188,82 @@ func (sy *syncer) out(ctx context.Context) error {
 			listChanges = append(listChanges, r)
 		}
 	}
-	if err := sy.adopt(ctx, typeTaskList, listChanges); err != nil {
-		return err
+
+	sentLists := false
+	listSet, err := sy.prepareSet(typeTaskList, listChanges)
+	if err != nil {
+		return false, err
 	}
-	if err := sy.send(ctx, typeTaskList, listChanges); err != nil {
-		return err
+	if listSet != nil {
+		rs, err := sy.c.Batch(ctx, []jmap.Call{listSet.call})
+		if err != nil {
+			return false, err
+		}
+		if err := sy.recordSet(listSet, rs[0]); err != nil {
+			return false, err
+		}
+		sentLists = true
 	}
 
+	// Read the pending Tasks only now: recording the list creates
+	// rewrote the creation references in Tasks filed under them.
 	tasks, err := sy.pendingRows(typeTask)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := sy.adopt(ctx, typeTask, tasks); err != nil {
-		return err
-	}
-	if err := sy.send(ctx, typeTask, tasks); err != nil {
-		return err
-	}
-	return sy.send(ctx, typeTaskList, listDestroys)
-}
-
-// adopt looks for each pending create on the server before it is sent,
-// and if it is already there, takes the server's object as its server
-// version instead of creating a second one.  This is what makes a
-// retried create, after a response was lost, or a re-run migration,
-// safe.  Tasks are found by uid; TaskLists, which have nothing like a
-// uid, by project id among the lists this cache does not yet know.
-func (sy *syncer) adopt(ctx context.Context, typ string, rows []*row) error {
-	var creates []*row
-	for _, r := range rows {
-		if r.server == nil && r.local != nil {
-			creates = append(creates, r)
-		}
-	}
-	if len(creates) == 0 {
-		return nil
-	}
-
-	found := map[int64]patch.Object{}
-	switch typ {
-	case typeTaskList:
-		args, err := sy.c.One(ctx, "TaskList/get", map[string]any{"accountId": sy.account, "ids": nil})
+	var sets []*setRequest
+	var groups [][]jmap.Call
+	for _, p := range []struct {
+		typ  string
+		rows []*row
+	}{{typeTask, tasks}, {typeTaskList, listDestroys}} {
+		req, err := sy.prepareSet(p.typ, p.rows)
 		if err != nil {
-			return fmt.Errorf("TaskList/get: %w", err)
+			return false, err
 		}
-		known, err := sy.knownIDs(typeTaskList)
-		if err != nil {
-			return err
-		}
-		byProject := map[string]patch.Object{}
-		for _, o := range objects(args["list"]) {
-			id, _ := o["id"].(string)
-			p, _ := o[propProject].(string)
-			if p != "" && !known[id] && byProject[p] == nil {
-				byProject[p] = o
-			}
-		}
-		for _, r := range creates {
-			p, _ := r.local[propProject].(string)
-			if o := byProject[p]; o != nil {
-				found[r.key] = o
-				delete(byProject, p)
-			}
-		}
-	case typeTask:
-		idFor := map[string]int64{}
-		var ids []string
-		for _, ch := range jmap.Chunks(len(creates), sy.c.MaxCallsInRequest) {
-			var calls []jmap.Call
-			for _, r := range creates[ch[0]:ch[1]] {
-				calls = append(calls, jmap.Call{Name: "Task/query", ID: fmt.Sprint(r.key), Args: map[string]any{
-					"accountId": sy.account,
-					"filter":    map[string]any{"uid": r.local["uid"]},
-				}})
-			}
-			rs, err := sy.c.Do(ctx, calls...)
-			if err != nil {
-				return err
-			}
-			for i, resp := range rs {
-				if e := resp.Err(); e != nil {
-					return fmt.Errorf("Task/query: %w", e)
-				}
-				if found, _ := resp.Args["ids"].([]any); len(found) > 0 {
-					id, _ := found[0].(string)
-					idFor[id] = creates[ch[0]+i].key
-					ids = append(ids, id)
-				}
-			}
-		}
-		got, err := sy.get(ctx, typeTask, ids)
-		if err != nil {
-			return err
-		}
-		for _, o := range got {
-			id, _ := o["id"].(string)
-			found[idFor[id]] = o
+		if req != nil {
+			sets = append(sets, req)
+			groups = append(groups, []jmap.Call{req.call})
 		}
 	}
-	if len(found) == 0 {
-		return nil
+	if len(sets) == 0 && !sentLists {
+		return false, nil
 	}
 
-	return sy.s.tx(func(tx *sql.Tx) error {
-		for _, r := range creates {
-			o := found[r.key]
-			if o == nil {
-				continue
-			}
-			fresh, err := queryRow(tx, `key = ?`, r.key)
-			if err != nil {
-				return err
-			}
-			id, _ := o["id"].(string)
-			fresh.jmapID = id
-			if err := sy.rebaseOnto(tx, fresh, o); err != nil {
-				return err
-			}
-			*r = *fresh
-			if typ == typeTaskList {
-				if err := resolveListRefs(tx, r); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
-}
-
-func (sy *syncer) knownIDs(typ string) (map[string]bool, error) {
-	rs, err := sy.s.db.Query(`SELECT jmap_id FROM objects WHERE collection = ? AND type = ? AND jmap_id IS NOT NULL`, sy.collection, typ)
+	steps, err := sy.pullSteps()
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	defer rs.Close()
-	known := map[string]bool{}
-	for rs.Next() {
-		var id string
-		if err := rs.Scan(&id); err != nil {
-			return nil, err
-		}
-		known[id] = true
+	rs, err := sy.c.Batch(ctx, append(groups, callGroups(steps)...)...)
+	if err != nil {
+		return false, err
 	}
-	return known, rs.Err()
-}
-
-func objects(v any) []patch.Object {
-	list, _ := v.([]any)
-	out := make([]patch.Object, 0, len(list))
-	for _, e := range list {
-		if o, ok := e.(patch.Object); ok {
-			out = append(out, o)
+	for i, req := range sets {
+		if err := sy.recordSet(req, rs[i]); err != nil {
+			return false, err
 		}
 	}
-	return out
+	return true, sy.finishPull(ctx, steps, rs[len(sets):])
 }
 
-// send issues one /set for the pending rows of one type and records the
-// outcome.
-func (sy *syncer) send(ctx context.Context, typ string, rows []*row) error {
+// setRequest is one /set call and what each of its creates, updates,
+// and destroys was, for recording the response.
+type setRequest struct {
+	typ          string
+	call         jmap.Call
+	byCreationID map[string]sent
+	byID         map[string]sent
+}
+
+// prepareSet builds one /set for the pending rows of one type, or returns
+// nil if there is nothing to send.  A pending update that turns out to
+// change nothing is settled here.
+func (sy *syncer) prepareSet(typ string, rows []*row) (*setRequest, error) {
 	create, update := map[string]any{}, map[string]any{}
 	var destroy []string
-	byCreationID := map[string]sent{}
-	byID := map[string]sent{}
+	req := &setRequest{typ: typ, byCreationID: map[string]sent{}, byID: map[string]sent{}}
 
 	for _, r := range rows {
-		if r.pending == 0 {
-			continue // settled by adopt
-		}
 		switch {
 		case r.server == nil && r.local != nil:
 			value := patch.Clone(r.local)
@@ -355,7 +274,7 @@ func (sy *syncer) send(ctx context.Context, typ string, rows []*row) error {
 			}
 			cid := fmt.Sprintf("k%d", r.key)
 			create[cid] = value
-			byCreationID[cid] = sent{r, r.pending, value}
+			req.byCreationID[cid] = sent{r, r.pending, value}
 		case r.server != nil && r.local != nil:
 			p := patch.Diff(r.server, r.local)
 			if typ == typeTask {
@@ -365,19 +284,19 @@ func (sy *syncer) send(ctx context.Context, typ string, rows []*row) error {
 			}
 			if len(p) == 0 {
 				if err := sy.settle(r, r.pending); err != nil {
-					return err
+					return nil, err
 				}
 				continue
 			}
 			update[r.jmapID] = p
-			byID[r.jmapID] = sent{r, r.pending, patch.Clone(r.local)}
+			req.byID[r.jmapID] = sent{r, r.pending, patch.Clone(r.local)}
 		case r.local == nil:
 			destroy = append(destroy, r.jmapID)
-			byID[r.jmapID] = sent{r, r.pending, nil}
+			req.byID[r.jmapID] = sent{r, r.pending, nil}
 		}
 	}
 	if len(create)+len(update)+len(destroy) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	args := map[string]any{"accountId": sy.account}
@@ -390,15 +309,20 @@ func (sy *syncer) send(ctx context.Context, typ string, rows []*row) error {
 	if len(destroy) > 0 {
 		args["destroy"] = destroy
 	}
-	resp, err := sy.c.One(ctx, typ+"/set", args)
-	if err != nil {
-		return fmt.Errorf("%s/set: %w", typ, err)
-	}
+	req.call = jmap.Call{Name: typ + "/set", Args: args, ID: typ + ":set"}
+	return req, nil
+}
 
+// recordSet records the outcome of a /set.
+func (sy *syncer) recordSet(req *setRequest, r jmap.Response) error {
+	if e := r.Err(); e != nil {
+		return fmt.Errorf("%s/set: %w", req.typ, e)
+	}
+	resp := r.Args
 	return sy.s.tx(func(tx *sql.Tx) error {
 		created, _ := resp["created"].(patch.Object)
 		for cid, v := range created {
-			out, ok := byCreationID[cid]
+			out, ok := req.byCreationID[cid]
 			if !ok {
 				continue
 			}
@@ -414,7 +338,7 @@ func (sy *syncer) send(ctx context.Context, typ string, rows []*row) error {
 		}
 		updated, _ := resp["updated"].(patch.Object)
 		for id := range updated {
-			if out, ok := byID[id]; ok {
+			if out, ok := req.byID[id]; ok {
 				if err := sy.recordSent(tx, out, id, out.value); err != nil {
 					return err
 				}
@@ -423,7 +347,7 @@ func (sy *syncer) send(ctx context.Context, typ string, rows []*row) error {
 		destroyed, _ := resp["destroyed"].([]any)
 		for _, v := range destroyed {
 			id, _ := v.(string)
-			if out, ok := byID[id]; ok {
+			if out, ok := req.byID[id]; ok {
 				if err := sy.recordSent(tx, out, id, nil); err != nil {
 					return err
 				}
@@ -432,14 +356,14 @@ func (sy *syncer) send(ctx context.Context, typ string, rows []*row) error {
 		for _, field := range []string{"notCreated", "notUpdated", "notDestroyed"} {
 			failed, _ := resp[field].(patch.Object)
 			for id, v := range failed {
-				out, ok := byCreationID[id]
+				out, ok := req.byCreationID[id]
 				if !ok {
-					out, ok = byID[id]
+					out, ok = req.byID[id]
 				}
 				if !ok {
 					continue
 				}
-				if err := sy.recordFailure(tx, typ, out, v); err != nil {
+				if err := sy.recordFailure(tx, req.typ, out, v); err != nil {
 					return err
 				}
 			}
@@ -564,15 +488,18 @@ func resolveListRefs(tx *sql.Tx, list *row) error {
 	return nil
 }
 
-// in fetches what changed on the server, TaskLists first so that Tasks
-// can be filed under them.
+// in pulls what changed on the server, in one request when the server
+// allows enough calls per request, which it nearly always does.
 func (sy *syncer) in(ctx context.Context) error {
-	for _, typ := range []string{typeTaskList, typeTask} {
-		if err := sy.inType(ctx, typ); err != nil {
-			return err
-		}
+	steps, err := sy.pullSteps()
+	if err != nil {
+		return err
 	}
-	return nil
+	rs, err := sy.c.Batch(ctx, callGroups(steps)...)
+	if err != nil {
+		return err
+	}
+	return sy.finishPull(ctx, steps, rs)
 }
 
 func (sy *syncer) state(typ string) (string, error) {
@@ -584,43 +511,131 @@ func (sy *syncer) state(typ string) (string, error) {
 	return st, err
 }
 
-func (sy *syncer) inType(ctx context.Context, typ string) error {
-	since, err := sy.state(typ)
-	if err != nil {
-		return err
+// pullStep is the calls that pull one type's changes since a state: its
+// /changes, then /get of what was created and of what was updated, by
+// result reference.  maxChanges keeps each /get within maxObjectsInGet.
+// A step with no calls stands for a resync, which a type with no state
+// needs.
+type pullStep struct {
+	typ   string
+	calls []jmap.Call
+}
+
+func (sy *syncer) pullStep(typ, since string) pullStep {
+	if since == "" {
+		return pullStep{typ: typ}
 	}
-	for {
-		if since == "" {
-			return sy.resync(ctx, typ)
-		}
-		args, err := sy.c.One(ctx, typ+"/changes", map[string]any{"accountId": sy.account, "sinceState": since})
-		var me *jmap.MethodError
-		if errors.As(err, &me) && me.Type == "cannotCalculateChanges" {
-			since = ""
-			continue
-		}
+	changes := typ + ":changes"
+	ref := func(path string) map[string]any {
+		return map[string]any{"resultOf": changes, "name": typ + "/changes", "path": path}
+	}
+	return pullStep{typ, []jmap.Call{
+		{Name: typ + "/changes", ID: changes, Args: map[string]any{
+			"accountId": sy.account, "sinceState": since, "maxChanges": sy.c.MaxObjectsInGet,
+		}},
+		{Name: typ + "/get", ID: typ + ":created", Args: map[string]any{"accountId": sy.account, "#ids": ref("/created")}},
+		{Name: typ + "/get", ID: typ + ":updated", Args: map[string]any{"accountId": sy.account, "#ids": ref("/updated")}},
+	}}
+}
+
+// pullSteps returns a step for each type, TaskLists first so that Tasks
+// can be filed under them.
+func (sy *syncer) pullSteps() ([]pullStep, error) {
+	var steps []pullStep
+	for _, typ := range []string{typeTaskList, typeTask} {
+		since, err := sy.state(typ)
 		if err != nil {
-			return fmt.Errorf("%s/changes: %w", typ, err)
+			return nil, err
 		}
-		var ids []string
-		for _, field := range []string{"created", "updated"} {
-			for _, v := range asList(args[field]) {
-				ids = append(ids, v)
+		steps = append(steps, sy.pullStep(typ, since))
+	}
+	return steps, nil
+}
+
+func callGroups(steps []pullStep) [][]jmap.Call {
+	var groups [][]jmap.Call
+	for _, st := range steps {
+		if st.calls != nil {
+			groups = append(groups, st.calls)
+		}
+	}
+	return groups
+}
+
+// finishPull applies the responses to the steps' calls, in order.  A type
+// with no state, or whose state the server can no longer calculate
+// changes from, is resynced; one with more changes than a pull carries is
+// pulled again until it has none left.
+func (sy *syncer) finishPull(ctx context.Context, steps []pullStep, rs []jmap.Response) error {
+	for _, st := range steps {
+		if len(rs) < len(st.calls) {
+			return fmt.Errorf("store: pulling %s: missing responses", st.typ)
+		}
+		var mine []jmap.Response
+		mine, rs = rs[:len(st.calls)], rs[len(st.calls):]
+		for {
+			if st.calls == nil {
+				if err := sy.resync(ctx, st.typ); err != nil {
+					return err
+				}
+				break
+			}
+			more, err := sy.applyPull(st.typ, mine)
+			var me *jmap.MethodError
+			if errors.As(err, &me) && me.Type == "cannotCalculateChanges" {
+				st = pullStep{typ: st.typ}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if !more {
+				break
+			}
+			since, err := sy.state(st.typ)
+			if err != nil {
+				return err
+			}
+			st = sy.pullStep(st.typ, since)
+			if mine, err = sy.c.Batch(ctx, st.calls); err != nil {
+				return err
 			}
 		}
-		fetched, err := sy.get(ctx, typ, ids)
-		if err != nil {
-			return err
+	}
+	return nil
+}
+
+// applyPull applies the responses to one pullStep's calls, and reports
+// whether the server has more changes to give.
+func (sy *syncer) applyPull(typ string, rs []jmap.Response) (bool, error) {
+	if e := rs[0].Err(); e != nil {
+		return false, fmt.Errorf("%s/changes: %w", typ, e)
+	}
+	var fetched []patch.Object
+	for _, r := range rs[1:] {
+		if e := r.Err(); e != nil {
+			return false, fmt.Errorf("%s/get: %w", typ, e)
 		}
-		newState, _ := args["newState"].(string)
-		if err := sy.apply(typ, fetched, asList(args["destroyed"]), nil, newState); err != nil {
-			return err
-		}
-		since = newState
-		if more, _ := args["hasMoreChanges"].(bool); !more {
-			return nil
+		fetched = append(fetched, objects(r.Args["list"])...)
+	}
+	changes := rs[0].Args
+	newState, _ := changes["newState"].(string)
+	if err := sy.apply(typ, fetched, asList(changes["destroyed"]), nil, newState); err != nil {
+		return false, err
+	}
+	more, _ := changes["hasMoreChanges"].(bool)
+	return more, nil
+}
+
+func objects(v any) []patch.Object {
+	list, _ := v.([]any)
+	out := make([]patch.Object, 0, len(list))
+	for _, e := range list {
+		if o, ok := e.(patch.Object); ok {
+			out = append(out, o)
 		}
 	}
+	return out
 }
 
 // get fetches objects by id, in requests no larger than the server

@@ -272,6 +272,9 @@ func TestSyncUnsyncedCollection(t *testing.T) {
 func TestSyncManyThreads(t *testing.T) {
 	srv := newServer(t)
 	a, b := machine(t, srv), machine(t, srv)
+	// b syncs while there is nothing, so that it later pulls everything
+	// as changes, more than one pull can carry.
+	sync(t, b, "personal")
 	var want []string
 	for i := range 2*jmaptest.MaxObjectsInGet + 1 {
 		title := fmt.Sprintf("Thread %02d", i)
@@ -288,4 +291,60 @@ func TestSyncManyThreads(t *testing.T) {
 	sync(t, c, "personal")
 	checkTitles(t, c, "p", want...)
 	checkServerCount(t, srv, "personal", "Task", len(want))
+}
+
+// checkRequests asserts how many API requests a sync makes after change,
+// against a server that allows 16 calls in a request, the RFC's suggested
+// minimum.  change is given a store already synced, with project p
+// holding thread id.
+func checkRequests(t *testing.T, what string, change func(s *Store, id string), want int) {
+	t.Helper()
+	srv := newServer(t)
+	srv.MaxCallsInRequest = 16
+	a := machine(t, srv)
+	th := addThread(t, a, "p", "Title\n")
+	sync(t, a, "personal")
+
+	change(a, th.ID)
+	before := srv.Requests
+	sync(t, a, "personal")
+	if got := srv.Requests - before; got != want {
+		t.Errorf("%s: sync made %d requests, want %d", what, got, want)
+	}
+}
+
+func TestSyncRequests(t *testing.T) {
+	checkRequests(t, "nothing to do", func(s *Store, id string) {}, 1)
+	checkRequests(t, "a note", func(s *Store, id string) { appendTo(t, s, "p", id, "a note") }, 2)
+	checkRequests(t, "a new thread", func(s *Store, id string) { addThread(t, s, "p", "New\n") }, 2)
+	checkRequests(t, "a new project", func(s *Store, id string) { addThread(t, s, "q", "New\n") }, 3)
+}
+
+// checkLostResponse asserts that when the response to the nth request of
+// a sync is lost, the next sync puts things right: a new thread in a new
+// project reaches the server once, and nothing is left pending.
+func checkLostResponse(t *testing.T, n int) {
+	t.Helper()
+	srv := newServer(t)
+	srv.MaxCallsInRequest = 16
+	a := machine(t, srv)
+	addThread(t, a, "p", "Old\n")
+	sync(t, a, "personal")
+
+	addThread(t, a, "q", "New\n")
+	srv.DropRequest = srv.Requests + n
+	if _, err := a.Sync(context.Background(), "personal"); err == nil {
+		t.Errorf("request %d: sync succeeded despite the lost response", n)
+	}
+	sync(t, a, "personal")
+	checkServerCount(t, srv, "personal", "TaskList", 2)
+	checkServerCount(t, srv, "personal", "Task", 2)
+	checkTitles(t, a, "q", "New")
+	checkNothingPending(t, a)
+}
+
+func TestSyncLostResponse(t *testing.T) {
+	checkLostResponse(t, 1) // the pull
+	checkLostResponse(t, 2) // the TaskList create
+	checkLostResponse(t, 3) // the Task create, and the pull after it
 }

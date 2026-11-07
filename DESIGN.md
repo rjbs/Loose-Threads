@@ -494,9 +494,20 @@ Each sync pulls, pushes, and pulls again.  The first pull is what makes
 the description resolver work: rebase happens only on the way in, so a
 pending description pushed without a pull first would replace notes
 appended elsewhere since the last one.  Pulling first narrows that to
-the time between two requests.  Requests are kept within the limits the
-Session advertises (`maxCallsInRequest`, `maxObjectsInGet`), and a full
-resync of Tasks pages through `Task/query`.
+the time between two requests.
+
+A sync is usually one or two requests, after fetching the Session.  The
+pull is one request: for each type, `/changes` and then, by result
+reference, `/get` of what was created and what was updated.  Setting
+`maxChanges` to `maxObjectsInGet` keeps the gets within limits;
+`hasMoreChanges` brings another pull.  The push is one more request,
+holding the Task `/set`, any TaskList destroys, and a second pull,
+which sees what the sets did because a request's calls run in order.
+TaskList creates and updates, which are rare, go in a request of their
+own first, so that Tasks can name new lists by their real ids.  If
+there is nothing to push, there is no second request.  Calls are packed
+into requests within `maxCallsInRequest`, and a full resync of Tasks
+pages through `Task/query`.
 
 ### Appends and the description resolver
 
@@ -561,9 +572,10 @@ States map to `progress` as: `open` from `needs-action` or
 The thread id becomes the Task's `uid`, which JSCalendar makes the
 client's identity for the object.  The server's id stays inside the
 cache.  Because `lt` mints the uid locally, a create whose response is
-lost can be retried safely: before resending, sync looks the uid up
-and adopts the existing Task if found.  This is also what makes
-migration restartable.
+lost can be retried safely: the next sync pulls before it pushes, the
+pull brings back the Task that was created, and it matches the pending
+create by uid, which settles it.  This is also what makes migration
+restartable.
 
 The uid is the bare thread id, with no prefix marking it as ours.
 Should one ever be needed, every uid can be rewritten in bulk.
@@ -576,14 +588,15 @@ A project is a TaskList.  Its identity is the vendor property
 rename in another client split the project in two.
 
 TaskLists have nothing like `uid`, so two machines that both start a
-new project offline will each create a list for it.  Two defenses:
-after each pull, duplicates are merged, keeping the list with the
+new project offline will each create a list for it.  After each pull,
+duplicates are merged, keeping the list with the
 lowest JMAP id (or the oldest, if none has one yet), moving the
-others' Tasks into it, and destroying the empty ones; and before
-creating a list, sync fetches all TaskLists (there are only a few
-hundred) and adopts a matching one it does not yet know.  The merge
+others' Tasks into it, and destroying the empty ones.  The merge
 runs right after the first pull, so a list made here for a project
 another machine already created is absorbed before it is ever sent.
+The same merge settles a list create whose response was lost: the
+next pull brings back the list, of which the pending create is now a
+duplicate.
 The rule is deterministic, so two machines merging at once agree.  Until
 then, reads treat every live list carrying a project id as that project.
 
@@ -634,9 +647,10 @@ Tailscale.  This is tracked as a thread rather than decided here.
 
 Local reads and writes test against the cache alone.  Sync tests run
 against `internal/jmaptest`, a small in-memory JMAP server serving Task
-and TaskList with change tracking, uid queries, and patches.  It
-advertises small request limits, so a handful of threads exercises
-chunking, and can answer every `/changes` with
+and TaskList with change tracking, uid queries, result references, and
+patches.  It advertises small request limits, so a handful of threads
+exercises chunking and paging, counts requests, can carry out a request
+but lose its response, and can answer every `/changes` with
 `cannotCalculateChanges`, which forces a full resync.  It is not
 Jinx's scripted server: its tests are Go code, not data.
 
