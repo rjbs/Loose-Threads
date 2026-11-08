@@ -7,7 +7,7 @@ DIST_OS   ?= linux
 DIST_ARCH ?= amd64
 DIST_BIN   = $(BUILDDIR)/$(BIN)-$(DIST_OS)-$(DIST_ARCH)
 
-SOURCES := go.mod go.sum $(shell find cmd internal -name '*.go')
+SOURCES := go.mod go.sum $(shell find cmd internal -name '*.go') $(wildcard cmd/lt/hooktext/*)
 
 # -s -w drop the symbol table and DWARF data, which takes ~11MB down to ~7MB;
 # nobody is going to run a debugger against the copy on the VMs.
