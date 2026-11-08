@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,25 @@ import (
 	"github.com/rjbs/loosethreads/internal/store"
 	"github.com/rjbs/loosethreads/internal/thread"
 )
+
+// The prose given to the model by the hooks lives in hooktext/ so it can
+// be edited as plain text.  Each is trimmed of surrounding whitespace by
+// hookText, so trailing newlines in the files don't matter.
+var (
+	//go:embed hooktext/session-start.md
+	sessionStartText string
+
+	//go:embed hooktext/compacted.md
+	compactedText string
+
+	//go:embed hooktext/pre-compact.md
+	preCompactText string
+)
+
+// hookText returns an embedded text with surrounding whitespace removed.
+func hookText(s string) string {
+	return strings.TrimSpace(s)
+}
 
 func init() {
 	register(&command{"hook", "act as a Claude Code hook (session-start, pre-compact)", runHook})
@@ -84,19 +104,9 @@ func hookSessionStart(in hookInput) error {
 	var b strings.Builder
 	b.WriteString("# Loose Threads\n\n")
 	if in.Source == "compact" {
-		b.WriteString("Context was just compacted.  If deferred work was discussed before the\n")
-		b.WriteString("compaction and does not appear in the list below, record it now.\n\n")
+		b.WriteString(hookText(compactedText) + "\n\n")
 	}
-	b.WriteString("Loose Threads is a per-project backlog of small deferred items, shared between\n")
-	b.WriteString("you and the human across sessions.  When work is deferred (\"we should also\n")
-	b.WriteString("fix X, but not now\"), record it immediately:\n\n")
-	b.WriteString("    lt add \"short title\" -body \"why it came up and what to do\"\n\n")
-	b.WriteString("Session id and origin are picked up from the environment.  When asked what\n")
-	b.WriteString("was deferred, run `lt list` (this project) or `lt list -scope session` (this\n")
-	b.WriteString("session) rather than recalling from memory.  Close items with `lt done ID` or\n")
-	b.WriteString("`lt abandon ID`, adding `-note \"why\"` when the reason is not obvious from a\n")
-	b.WriteString("commit, especially for threads that were questions to decide.  To add to an\n")
-	b.WriteString("existing thread, use `lt append ID \"text\"`; `lt edit` needs a terminal.\n\n")
+	b.WriteString(hookText(sessionStartText) + "\n\n")
 
 	if in.SessionID != "" {
 		fmt.Fprintf(&b, "Session id: %s\n", in.SessionID)
@@ -159,8 +169,5 @@ func hookSessionStart(in hookInput) error {
 // conversation is summarized, which is when such items are most often
 // lost.
 func hookPreCompact(in hookInput) error {
-	text := "Context is about to be compacted.  Before it is, record any deferred work\n" +
-		"that has not yet been written down, with `lt add \"title\" -body \"context\"`.\n" +
-		"Check `lt list -scope session` to see what this session has already recorded."
-	return emitContext("PreCompact", text)
+	return emitContext("PreCompact", hookText(preCompactText))
 }
