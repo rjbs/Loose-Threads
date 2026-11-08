@@ -1089,8 +1089,8 @@ var helpSections = [][2]string{
 const helpNotes = "The list refreshes itself as the store changes.  A thread someone else closes " +
 	"stays on screen, struck through, until a hard refresh.  A thread you close here " +
 	"disappears at once.\n\n" +
-	"Threads are Markdown files with YAML frontmatter, one per file, under " +
-	"$LOOSETHREADS_HOME.  The same store is what \"lt\" and the MCP server use."
+	"Threads live in a local cache under $LOOSETHREADS_HOME, synced with a JMAP " +
+	"for Tasks server.  The same cache is what \"lt\" and the MCP server use."
 
 func (m *Model) viewHelp() string {
 	th := m.theme

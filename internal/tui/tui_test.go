@@ -224,11 +224,11 @@ func TestAdd(t *testing.T) {
 	}
 }
 
-func TestAddCreatesProjectDirectory(t *testing.T) {
+func TestAddCreatesProject(t *testing.T) {
 	m, s := newModel(t, "github.com/rjbs/fresh", fixture{projA, "Elsewhere", thread.Open})
 	checkView(t, "virtual project shown", m, []string{"github.com/rjbs/fresh"}, []string{"Elsewhere"})
 	if _, err := s.LookupProject("github.com/rjbs/fresh"); err == nil {
-		t.Fatal("project directory should not exist before add")
+		t.Fatal("project should not exist before add")
 	}
 	press(m, "a")
 	typeText(m, "First")

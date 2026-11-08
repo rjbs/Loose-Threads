@@ -9,34 +9,30 @@ session.
 
 ## Vocabulary
 
-* **thread**: one deferred item.  One file on disk.
+* **thread**: one deferred item.  Stored as a JMAP Task.
 * **project**: the unit under which threads are grouped.  Identified by
-  the git remote where possible; see *Project identity*.
+  the git remote where possible; see *Project identity*.  Stored as a
+  JMAP TaskList.
+* **collection**: a group of projects synced with one JMAP account, or,
+  for `local`, never synced.  See *Storage and sync*.
 * **session**: one Claude Code session.  Recorded on each thread as
   provenance, not used as a partition.
 * **scope**: how much of the store a listing covers: this session, this
   project, or everything.
 
-## Storage
+## Threads
 
-All threads for all projects live in one central directory, outside any
-project checkout, so the human-facing tools can navigate across projects.
-
-    $LOOSETHREADS_HOME            (default: ~/.local/share/loosethreads)
-    └── <project-dir>/            (one directory per project; see below)
-        ├── project.yaml          (the exact project id, optional display name)
-        └── <thread-id>.md        (one file per thread)
-
-A thread file is Markdown with YAML frontmatter.  The first non-blank
-line of the body is the title.  The rest of the body is free prose:
-what we were doing, why we deferred it, anything that answers "why did I
-want this?" months later.
+A thread is shown and edited as Markdown with YAML frontmatter: what
+`lt show` prints and what `lt edit` opens.  The first non-blank line of
+the body is the title.  The rest of the body is free prose: what we
+were doing, why we deferred it, anything that answers "why did I want
+this?" months later.
 
     ---
     state: open
     created: 2026-09-04T12:40:00-04:00
     session: 2f25fed4-dac5-4879-a38f-f46d45bfd92d
-    transcript: /Users/rjbs/.claude/projects/-Users-rjbs-code-Foo/2f25fed4-....jsonl
+    origin: agent
     ---
     Handle the empty-remote case in project_id
 
@@ -44,9 +40,10 @@ want this?" months later.
     caller dies with a bad message.  Should fall back to the path.
 
 The title goes in the body rather than the frontmatter so that titles
-with colons, hashes, and brackets need no YAML quoting.  Tools that
-write files will always produce a title line; the parser defines the
-title as the first non-blank body line, truncated for display.
+with colons, hashes, and brackets need no YAML quoting; the parser
+defines the title as the first non-blank body line, truncated for
+display.  Stored, the title and body become the Task's `title` and
+`description`; see *Mapping*.
 
 ### Frontmatter fields
 
@@ -55,13 +52,12 @@ title as the first non-blank body line, truncated for display.
 | `state`      | yes      | `open`, `done`, or `abandoned`                     |
 | `created`    | yes      | ISO 8601 with offset                               |
 | `session`    | no       | Claude Code session id, when created by the agent  |
-| `transcript` | no       | path to that session's transcript                  |
 | `closed`     | no       | when state left `open`                             |
 | `origin`     | no       | `agent` or `human`; absent means unknown           |
 
 Threads are never deleted by the tools.  `done` and `abandoned` items
-stay on disk and are hidden by default in listings.  Purging is a later
-conversation.
+stay in the store and are hidden by default in listings.  Purging is a
+later conversation.
 
 ### Closing with a note
 
@@ -101,24 +97,17 @@ rewriting a body still means a person and an editor.
 
 ### Thread ids
 
-The filename is the id: `YYYY-MM-DD-xxxxxx`, six random characters
-from a lowercase alphabet with the confusable ones removed.  (Four,
-originally; widened so that machines minting ids independently and
-syncing later do not collide.)
-Ids carry only the date, so listings sort by the `created` timestamp
-and use the id as a tiebreaker.  `created` is recorded to the second,
-so threads added within one second (a batch of `lt add` calls from one
-shell command, say) still fall back to the random suffix; see *Open
-questions*.  Uniqueness only matters within one project directory, and
-a thread may be referred to by any unique suffix of its id, so a few
-characters usually suffice.
-
-### Concurrency
-
-Distinct sessions create distinct files, so there is no shared-write
-problem in the common case.  The rare case is the TUI and an MCP call
-editing the same file.  All writers write the whole file atomically
-(write to a temp name, rename).  We do not attempt merging.
+An id is `YYYY-MM-DD-xxxxxx`, six random characters from a lowercase
+alphabet with the confusable ones removed.  (Four, originally; widened
+so that machines minting ids independently and syncing later do not
+collide.)  The id is minted locally and becomes the Task's `uid`; see
+*Thread identity*.  Ids carry only the date, so listings sort by the
+`created` timestamp and use the id as a tiebreaker.  `created` is
+recorded to the second, so threads added within one second (a batch of
+`lt add` calls from one shell command, say) still fall back to the
+random suffix; see *Open questions*.  Uniqueness only matters within one
+project, and a thread may be referred to by any unique suffix of its
+id, so a few characters usually suffice.
 
 ## Project identity
 
@@ -133,74 +122,50 @@ first of these that exists wins:
 6. the absolute path of the working directory (not in a checkout)
 
 Remote URLs are normalized to `host/path` with the scheme, user, port,
-and trailing `.git` removed, so that `git@github.com:rjbs/foo.git` and
-`https://github.com/rjbs/foo` are the same project.  Worktrees of the
-same repository therefore share one project, which is what we want.
+and trailing `.git` removed, and the host lowercased, so that
+`git@github.com:rjbs/foo.git` and `https://github.com/rjbs/foo` are the
+same project.  The path keeps its case, since some hosts are
+case-sensitive.  Worktrees of the same repository therefore share one
+project, which is what we want.
 
 The path fallbacks are ugly but never merge unrelated projects, unlike
 a basename fallback would.  They are also unstable: the moment a remote
 is added the identity changes and threads recorded under the path are
-orphaned.  So a path identity is flagged wherever it is seen: a callout
-in the browser, a warning in the SessionStart context (with an
-instruction to tell the user), and a line on stderr from `lt add`.
+orphaned.  Path identities also differ from machine to machine, so
+they are best kept in the `local` collection.  So a path identity is
+flagged wherever it is seen: a callout in the browser, a warning in the
+SessionStart context (with an instruction to tell the user), and a line
+on stderr from `lt add`.
 
 The common sequence is: threads recorded before the repository had a
 remote, then a remote added, then a wish to fix the storage.  `lt
 rehome` handles it: it computes the current (remote-based) identity,
 looks for projects under the identities the checkout would have had
 without a remote (its git root, and the directory itself), moves their
-thread files into the remote-based project, and removes the emptied
-directories.  It refuses to move anything if an id would collide, says
+threads into the remote-based project, and removes the emptied
+projects.  It refuses to move anything if an id would collide, says
 so and exits 0 if there is nothing to move, and errors if the checkout
 still has no remote.
-
-### Project directories
-
-Every project is one directory directly under the store root, so all
-projects are the same depth and no project id can be a prefix of
-another.  The directory name is a readable slug plus a short hash:
-
-    github.com/rjbs/Dist-Zilla      ->  github.com-rjbs-dist-zilla-8f3a1c/
-    /Users/rjbs/code/LooseThreads   ->  users-rjbs-code-loosethreads-1b2c3d/
-
-The slug is the id lowercased, with each run of characters outside
-`[a-z0-9.]` collapsed to one hyphen and the ends trimmed.  The suffix
-is the first six hex digits of the SHA-256 of the exact normalized id.
-The slug is lossy on purpose and exists only for humans; the hash
-carries uniqueness, so ids with identical slugs (`rjbs/foo-bar` and
-`rjbs/foo/bar`) still get distinct directories.  Lowercasing the slug
-also keeps case-insensitive filesystems from merging two ids.
-
-Each project directory holds a `project.yaml` recording the exact id,
-since the directory name cannot be reversed:
-
-    id: github.com/rjbs/Dist-Zilla
-    name: Dist::Zilla        # optional, for display; defaults to id
-
-A directory under the store root is a project if and only if it has a
-`project.yaml`.  Listing all projects means reading one file per
-directory.  The directory name is what lookups use, so if the id inside
-`project.yaml` disagrees with it (hand relocation carried the wrong
-file along), the id is what is wrong; the tools flag the mismatch (a
-callout in the browser, a warning on stderr from `lt list`) rather than
-guessing.
 
 ## Components
 
 Everything is one Go binary, `lt`, with subcommands.  One language means
-one implementation of the file format and of state changes, shared by the
-CLI, the TUI, and the MCP server.  The order below is also the build
-order: each layer is useful on its own before the next exists.
+one implementation of the thread format, of state changes, and of sync,
+shared by the CLI, the TUI, and the MCP server.
 
-### 1. Library: `internal/thread`, `store`, `project`, `editor`
+### 1. Library
 
-Storage and parsing, no UI.
+No UI.
 
-* `thread`: parse and serialize thread files, title, state changes, ids
-* `store`: locate the store, project directories, list and write
-  threads atomically, resolve ids by suffix, the shared JSON view
+* `thread`: the thread type, its Markdown form, title, state changes, ids
+* `store`: the SQLite cache, projects and threads in it, resolving ids
+  by suffix, the shared JSON view, config, and sync
+* `patch`: diff, apply, and rebase of JSON objects, the core of sync
+* `jmap`: a minimal JMAP client
+* `jmaptest`: an in-memory JMAP server for tests
 * `project`: derive project identity from a directory
-* `editor`: build the `$EDITOR` command, with the Vim cursor positioning
+* `editor`: build the `$EDITOR` command, with the Vim cursor
+  positioning, and edit a thread through a temporary file
 
 The TUI and MCP server live in `internal/tui` and `internal/mcpserver`;
 `cmd/lt` is the command line over all of them.
@@ -210,8 +175,7 @@ The TUI and MCP server live in `internal/tui` and `internal/mcpserver`;
 Thin wrapper on the library.  Used by the human, by hooks, and by the
 agent if no MCP server is running.  Rough shape:
 
-    lt add "title" [-body TEXT | < body] [-project ID] [-session ID]
-                                [-transcript PATH] [-origin agent|human]
+    lt add "title" [-body TEXT | < body] [-project ID] [-session ID] [-origin agent|human]
     lt list [-scope session|project|all] [-all-states] [-json]
     lt show THREAD [-json]
     lt done THREAD... [-note WHY]
@@ -221,6 +185,10 @@ agent if no MCP server is running.  Rough shape:
     lt edit THREAD              # opens $EDITOR; needs a terminal
     lt project-id [DIR] [-v]    # print the derived identity
     lt rehome                   # move path-identified threads under the remote identity
+    lt move-project COLLECTION  # move this project into another collection
+    lt rename-project NAME      # set this project's display name
+    lt project-defaults [-n]    # default names and colors for older lists
+    lt sync [-collection NAME] [-status] [-quiet]
     lt browse                   # the TUI; bare "lt" at a terminal does the same
     lt mcp                      # the MCP server, on stdio
     lt hook session-start       # see Claude Code integration
@@ -257,20 +225,22 @@ When opening a thread in Vim the invocation can position the cursor on
 the title line, so the frontmatter-first layout costs nothing.
 
 The browser is meant to sit open in a tmux window beside a Claude Code
-session, so it polls the store (once a second, comparing a listing of
-the root and current project directory) and reloads on any change.
-Under the default hide-closed view, a thread that was on screen and is
-then closed by someone else stays on screen styled as closed, so a
-glance shows the transition.  A hard refresh (`r`, ctrl-R) returns to
-the plain open set.  Threads closed in the browser itself hide at once,
-since the user already knows.  Deleted files simply vanish.
+session, so it polls the store once a second, comparing a counter that
+every write to the cache bumps, and reloads on any change.  It also
+starts a background sync every minute, so changes from other machines
+arrive on their own.  Under the default hide-closed view, a thread that
+was on screen and is then closed by someone else stays on screen styled
+as closed, so a glance shows the transition.  A hard refresh (`r`,
+ctrl-R) returns to the plain open set.  Threads closed in the browser
+itself hide at once, since the user already knows.  Threads deleted
+elsewhere simply vanish.
 
 ### 4. MCP server: `lt mcp`
 
 Exposes the library to Claude Code as typed tools over stdio, using the
 official Go MCP SDK.  Small surface:
 
-* `add_thread(title, body?, project?, session?, transcript?)`
+* `add_thread(title, body?, project?, session?)`
 * `list_threads(scope?, project?, session?, include_closed?)`
 * `get_thread(id, project?)`
 * `append_thread(id, text, project?)`
@@ -296,12 +266,13 @@ Hooks, all of which call `lt`:
   id, and emits `additionalContext` telling the agent its session id,
   project id, and the list of open threads for the project.  This is how
   the agent learns its identity.  It also serves as a reminder that the
-  backlog exists.  SessionStart fires again after compaction with
-  `source: compact`, so the same hook re-injects identity and the open
-  list after context is summarized; in that case it opens by asking the
-  agent to record anything discussed before compaction that is missing
-  from the list.  Register it without a matcher so it runs on every
-  source.
+  backlog exists.  It starts a background sync, and if earlier syncs
+  recorded problems, it lists them and asks the agent to tell the user.
+  SessionStart fires again after compaction with `source: compact`, so
+  the same hook re-injects identity and the open list after context is
+  summarized; in that case it opens by asking the agent to record
+  anything discussed before compaction that is missing from the list.
+  Register it without a matcher so it runs on every source.
 * **PreCompact**: `lt hook pre-compact` emits a nudge: "before context
   is summarized, record any deferred items with Loose Threads."  The
   docs describe `additionalContext` for PreCompact, but the model has no
@@ -340,105 +311,47 @@ already this session" versus "you also have these from before."
 4. Human runs `lt browse` at leisure, edits, closes, or reprioritizes.
 5. Next session starts; step 1 shows what is still open.
 
-## Sync between machines
+## Storage and sync
 
 Threads are found on disposable development VMs as often as on the
-laptop, and must not die with the VM.  Primary storage stays local so
-that everything works offline; sync moves files between stores.
+laptop, and must not die with the VM, so they sync between machines.
+They are JMAP Task objects, held in a local cache and synced with a
+JMAP for Tasks server (TaskMaster, in practice).  A server gives other
+clients, web and mobile included, something to talk to, and keeping
+the data in the orthodox JMAP shape means general Tasks tools work on
+it too.
 
-### Collections
+Until November 2026 threads were Markdown files, one per thread, in a
+directory per project, synced with git.  `lt migrate` imported them
+into the cache, and was removed once every store had moved.
 
-Git syncs whole trees, so grouping for sync has to be spatial.  The
-store root holds *collections*, each a directory that may be a git
-clone; a project lives in exactly one collection.  The `local`
-collection has no remote and is never synced.
+### Collections and routing
 
-    $LOOSETHREADS_HOME/
-      config.yaml                 collections and routing rules
-      local/                      no remote, never synced
-        <project-dir>/
-      personal/                   clone of a private sync repository
-        <project-dir>/
-      work/                       clone of the work sync repository
-        <project-dir>/
+The cache is divided into collections.  A collection with an account
+in `config.yaml` syncs with that JMAP account; `local`, and any other
+without one, never syncs.  A project lives in exactly one collection.
 
-Different collections can point at repositories owned by different
-parties, so the work git admin sees only the work collection, and a VM
-configured with only `work` has nowhere for personal threads to land.
-Project directories are unchanged: still flat within their collection,
-still slug plus hash, still holding a `project.yaml`.  Everything above
-the collection level is one path segment deeper than before.
-
-Why git and not a hub with rsync: one file per thread with immutable
-ids is the ideal git payload (adds never conflict; edits are rare), it
-is offline-first, the hub is a repository you already have credentials
-for on every machine, and history answers the purging question for
-free.  Project ids are remote-based, so the same project lands in the
-same directory on every machine; path-identified projects would not,
-which is one more reason the path warning exists.
-
-### Routing
-
-When a project is first created, `config.yaml` decides its collection
-by glob rules on the project id, first match wins, default `local`:
-
+    server: https://taskmaster.example.ts.net/jmap/session
     collections:
-      work:     { remote: git@gitbox.fastmail.com:rjbs/threads-work.git }
-      personal: { remote: git@github.com:rjbs/threads-personal.git }
+      work:     { account: work }
+      personal: { account: personal }
     routes:
-      - { match: "github.com/fastmail/*",   collection: work }
-      - { match: "gitbox.fastmail.com/*",   collection: work }
-      - { match: "github.com/rjbs/*",       collection: personal }
+      - { match: "github.com/fastmail/*", collection: work }
+      - { match: "github.com/rjbs/*",     collection: personal }
 
-The first `lt add` in a project reports where it landed, so a wrong
-guess is visible at once.  `lt move-project COLLECTION` relocates a
-project, the same file move `rehome` does.  A `collection:` field in
-`project.yaml` to pin a project against the rules is possible but not
-built until a case appears.
-
-### Syncing
-
-`lt sync` runs, for each collection with a remote: commit everything,
-fetch, merge, push.  (Merge rather than rebase: a conflicted merge
-leaves markers in the working tree and a state the next sync can finish
-once they are gone, where a conflicted rebase leaves the repository
-mid-operation.)  A VM disposed of without a manual sync is the
-failure mode that matters, so writes push: `lt add`, `done`, `abandon`,
-`reopen`, and the MCP equivalents commit and push in the background
-when the collection has a remote.  The laptop pulls at SessionStart and
-from the browser's poll loop.  `lt sync add NAME URL` clones a
-collection into place and records it in `config.yaml`, for VM
-provisioning.
-
-Conflicts: adds never conflict.  The realistic conflict is the same
-thread's state changed, or a note appended, on two machines.  First
-version: `lt sync` reports the conflict and leaves git's markers.
-Second version, only once it has actually happened: merge thread files
-semantically (closed beats open; keep both notes).
-
-Ids carry six random characters so that machines minting them
-independently and syncing later do not collide.
-
-Migration from the current layout: move existing project directories
-under `local/`.
-
-## JMAP for Tasks storage
-
-Proposed 2026-11-06 and built the same day on the jmap-storage branch,
-not yet deployed.  Threads move from Markdown files synced by git to
-JMAP Task objects, held in a local cache and synced with a JMAP for
-Tasks server (TaskMaster, in practice).  The goal is better human
-interfaces: a server gives other clients, web and mobile included,
-something to talk to, and keeping the data in the orthodox JMAP shape
-means general Tasks tools work on it too.  This section supersedes the
-*Storage* and *Sync between machines* sections above, which describe
-the file store that `lt migrate` imports from.
+When a project is first created, the routes decide its collection by
+glob rules on the project id, first match wins, default `local`.  The
+first `lt add` in a project reports where it landed, so a wrong guess
+is visible at once.  `lt move-project COLLECTION` moves a project, and
+is how a `local` project is published.  A machine configured with
+only `work`, like a work VM, has no account for personal threads to
+reach.
 
 ### What agents see
 
-Nothing changes for the agent.  A survey of every Claude Code
-transcript on the laptop (2026-11-06, excluding this project's own
-development) found about 1,290 `lt` invocations across 113 sessions,
+The move to JMAP changed nothing for the agent.  A survey of every
+Claude Code transcript on the laptop (2026-11-06, excluding this
+project's own development) found about 1,290 `lt` invocations across 113 sessions,
 no use of the MCP server, and no reads or edits of thread files at
 all; the only direct contact with the store was one session debugging
 the `lt edit` hang.  Agents almost always pass the full date-prefixed
@@ -550,7 +463,7 @@ third case is what catches one that collides with an append.
 
 | `lt` concept           | JMAP for Tasks                                              |
 |------------------------|-------------------------------------------------------------|
-| collection             | account: `{server, accountId}` in `config.yaml`             |
+| collection             | account: `server`, `token`, `account` in `config.yaml`      |
 | project                | TaskList with `lt.semiotic.systems:project`; `name` is display only |
 | thread id              | Task `uid`                                                  |
 | title                  | `title`                                                     |
@@ -560,15 +473,15 @@ third case is what catches one that collides with an append.
 | `closed`               | `progressUpdated`                                           |
 | `session`              | `lt.semiotic.systems:session`, nullable                     |
 | `origin`               | keyword `lt.semiotic.systems:origin:agent`; absent means unknown |
-| `transcript`           | dropped                                                     |
 
 Vendor properties and keywords are prefixed `lt.semiotic.systems:`,
 following RFC 8984's owning-domain convention.  Origin is a keyword of
 the form `PREFIX:origin:VALUE` so that more keywords can join it later.
 
-`transcript` was never populated in practice (0 of 522 threads had
-it), held a path meaningful on one machine only, and can be found
-from the session id anyway.
+The file store also had `transcript`, a path to the session's
+transcript.  It was dropped in the move: it was never populated in
+practice (0 of 522 threads had it), held a path meaningful on one
+machine only, and can be found from the session id anyway.
 
 States map to `progress` as: `open` from `needs-action` or
 `in-process`, `done` from `completed`, `abandoned` from `cancelled` or
@@ -582,8 +495,7 @@ client's identity for the object.  The server's id stays inside the
 cache.  Because `lt` mints the uid locally, a create whose response is
 lost can be retried safely: the next sync pulls before it pushes, the
 pull brings back the Task that was created, and it matches the pending
-create by uid, which settles it.  This is also what makes migration
-restartable.
+create by uid, which settles it.
 
 The uid is the bare thread id, with no prefix marking it as ours.
 Should one ever be needed, every uid can be rewritten in bulk.
@@ -602,8 +514,8 @@ hash of the id, so every machine agrees.  It never sets either again on
 its own, so a change made in `lt rename-project` or in any other client
 stays; `move-project` carries both to the new list.  `lt
 project-defaults` fills in the defaults for lists that have no name of
-their own (or only their id) or no color, as lists made before this
-were.
+their own (or only their id) or no color, as lists made before `lt`
+picked them did not.
 
 TaskLists have nothing like `uid`, so two machines that both start a
 new project offline will each create a list for it.  After each pull,
@@ -630,7 +542,8 @@ pending creates; with two types and a fixed order, we do not need to.
 
 Moves follow:
 
-* `lt move` (a thread to another project) changes `taskListIds`.
+* Moving a thread to another project (the browser's `m`) changes
+  `taskListIds`.
 * `lt rehome` moves every Task into the target project's list and
   destroys the old list.
 * `lt move-project` (to another collection) is a move between
@@ -654,7 +567,7 @@ HTML.  This is not expected to happen.
 
 ### Servers and accounts
 
-Collections become accounts, likely two (personal and work) on one
+Collections are accounts: two, personal and work, on one
 TaskMaster.  Keeping them separate is tidiness, not policy.  The same
 backend is served two ways.  On the tailnet, it authenticates by
 Tailscale login, and a machine there sees every account.  On the public
@@ -675,21 +588,11 @@ but lose its response, and can answer every `/changes` with
 `cannotCalculateChanges`, which forces a full resync.  It is not
 Jinx's scripted server: its tests are Go code, not data.
 
-### Migration
-
-`lt migrate` makes each existing thread file a pending create in the
-cache, its project's list a pending TaskList create, and the first sync
-pushes them.  Since `uid` is the identity, a migration interrupted
-partway can simply be run again, and two machines migrating the same
-files produce one Task per thread.  On a copy of a real store of 522
-threads, every one came through identical to its file apart from the
-time zone timestamps are shown in.
-
 ## Open questions
 
 * **Same-second ordering.**  `created` has one-second precision, so a
   burst of adds ties and sorts by random suffix.  Sub-second timestamps
-  in the file or a time component in the id would fix it; neither is
+  in the Task or a time component in the id would fix it; neither is
   worth the ugliness until it bites.
 * **Ordering and priority.**  Creation order is the only ordering
   defined so far.  Do we want a priority field, or is manual reordering
@@ -697,11 +600,9 @@ time zone timestamps are shown in.
 * **Session-less threads.**  Threads the human adds from the TUI have no
   session.  Fine, but the "this session" scope should not surprise
   anyone by omitting them.
-* **Cross-project view.**  The TUI's "all projects" view is easy given
-  the layout, but what does the agent do with `scope=all`?  Probably
-  nothing by default; it exists for the human.
-* **Store location on multiple machines.**  A single directory is easy
-  to sync or keep in git.  Not designing for it yet.
+* **Cross-project view.**  The TUI's "all projects" view is easy, but
+  what does the agent do with `scope=all`?  Probably nothing by default;
+  it exists for the human.
 
 ## Non-goals, for now
 
