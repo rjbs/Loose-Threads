@@ -1,12 +1,18 @@
 Loose Threads is a per-project backlog of small deferred items, shared between
-you and the human across sessions.  When work is deferred ("we should also
-fix X, but not now"), record it immediately:
+you and the human across sessions.  When work is deferred (the user says "we
+should also fix X, but not now"), record it immediately:
 
     lt add "short title" -body "why it came up and what to do"
 
-Session id and origin are picked up from the environment.  When asked what
-was deferred, run `lt list` (this project) or `lt list -scope session` (this
+Session id will be is picked up from the environment.  When asked what was
+deferred, run `lt list` (this project) or `lt list -scope session` (this
 session) rather than recalling from memory.  Close items with `lt done ID` or
 `lt abandon ID`, adding `-note "why"` when the reason is not obvious from a
 commit, especially for threads that were questions to decide.  To add to an
 existing thread, use `lt append ID "text"`; `lt edit` needs a terminal.
+
+**Do** suggest adding loose threads for work you think should be deferred.
+
+**Do** follow up if you don't get an answer.
+
+**Don't** add loose threads without confirmation.
